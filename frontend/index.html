@@ -56,22 +56,48 @@
     .glass-card {
       background: rgba(13, 21, 40, 0.85);
       border: 1px solid rgba(255, 255, 255, 0.08);
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(20px);
     }
     .active-nav {
       background: rgba(0, 212, 170, 0.12);
       color: #00D4AA;
       border-left: 3px solid #00D4AA;
     }
+    @keyframes float-bubble {
+      0% { transform: translateY(0px) translateX(0px); opacity: 0.15; }
+      50% { transform: translateY(-40px) translateX(20px); opacity: 0.45; }
+      100% { transform: translateY(0px) translateX(0px); opacity: 0.15; }
+    }
+    .bubble {
+      position: absolute;
+      border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, rgba(0, 212, 170, 0.25), transparent);
+      filter: blur(12px);
+      animation: float-bubble 10s ease-in-out infinite;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #060B17;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1E2D54;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #00D4AA;
+    }
   </style>
 </head>
-<body class="min-h-screen">
+<body class="min-h-screen overflow-x-hidden">
   <div id="root"></div>
 
   <!-- React Application Source (Transpiled by Babel) -->
   <script type="text/babel">
-    const { useState, useEffect } = React;
-    const { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = Recharts;
+    const { useState, useEffect, useRef } = React;
+    const { ResponsiveContainer, AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = Recharts;
 
     const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
       ? 'http://localhost:8000'
@@ -82,21 +108,47 @@
       const [token, setToken] = useState(localStorage.getItem('jwt_token') || '');
       const [email, setEmail] = useState(localStorage.getItem('jwt_email') || '');
       const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+      const [authName, setAuthName] = useState('');
       const [authEmail, setAuthEmail] = useState('');
       const [authPassword, setAuthPassword] = useState('');
+      const [showPassword, setShowPassword] = useState(false);
       const [authError, setAuthError] = useState('');
       const [authLoading, setAuthLoading] = useState(false);
+      const [successAnimation, setSuccessAnimation] = useState(false);
+
+      // Collapsible Sidebar
+      const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
       // Data States
       const [activeTab, setActiveTab] = useState('dashboard');
       const [schedule, setSchedule] = useState(null);
       const [sensors, setSensors] = useState([]);
+      const [latestReadings, setLatestReadings] = useState({});
       const [tips, setTips] = useState([]);
       const [weather, setWeather] = useState([]);
       const [loading, setLoading] = useState(false);
       const [optLoading, setOptLoading] = useState(false);
+      const [weatherRefreshLoading, setWeatherRefreshLoading] = useState(false);
       const [error, setError] = useState('');
-      const [toast, setToast] = useState(null);
+      const [toasts, setToasts] = useState([]);
+
+      // Auto Refresh Timer states
+      const [secondsSinceUpdate, setSecondsSinceUpdate] = useState(0);
+
+      // Sensor modal form state
+      const [isAddSensorOpen, setIsAddSensorOpen] = useState(false);
+      const [newSensorName, setNewSensorName] = useState('');
+      const [newSensorZone, setNewSensorZone] = useState('bedroom');
+      const [newSensorKind, setNewSensorKind] = useState('temperature');
+      const [newSensorUnits, setNewSensorUnits] = useState('C');
+      const [sensorAdding, setSensorAdding] = useState(false);
+
+      // Inline post reading state
+      const [activeReadingInputSensorId, setActiveReadingInputSensorId] = useState(null);
+      const [postValueMap, setPostValueMap] = useState({});
+
+      // Recommendation Filter category state
+      const [recommendationCategory, setRecommendationCategory] = useState('All');
 
       // Trigger standard API request helper
       async function request(path, options) {
@@ -112,7 +164,6 @@
         const res = await fetch(url, fetchOptions);
         
         if (res.status === 401) {
-          // Automatic logout on unauthorized API access
           handleLogout();
           throw new Error('Session expired. Please sign in again.');
         }
@@ -126,10 +177,35 @@
         return res.json();
       }
 
-      // Show temporary toast notification
+      // Show temporary toast notification (handles multiple toasts concurrently)
       function showToast(message, type) {
-        setToast({ message, type: type || 'success' });
-        setTimeout(() => setToast(null), 4000);
+        const newId = Date.now() + Math.random();
+        const newToast = { id: newId, message: message, type: type || 'success' };
+        setToasts(function(currentToasts) {
+          return currentToasts.concat([newToast]);
+        });
+        setTimeout(function() {
+          setToasts(function(currentToasts) {
+            return currentToasts.filter(function(t) { return t.id !== newId; });
+          });
+        }, 4000);
+      }
+
+      // Fetch all latest readings for sensors
+      async function fetchLatestReadings(sensorList) {
+        const readingsObj = {};
+        const promises = sensorList.map(async (sensor) => {
+          try {
+            const res = await request('/sensors/' + sensor.id + '/readings?limit=1');
+            if (res && res.data && res.data.length > 0) {
+              readingsObj[sensor.id] = res.data[0];
+            }
+          } catch (e) {
+            console.error('Error fetching reading for sensor ' + sensor.id, e);
+          }
+        });
+        await Promise.all(promises);
+        setLatestReadings(readingsObj);
       }
 
       // Fetch all dashboard data
@@ -148,6 +224,8 @@
           const sensorRes = await request('/sensors');
           if (sensorRes && sensorRes.data) {
             setSensors(sensorRes.data);
+            // Parallel fetch latest reading per sensor
+            fetchLatestReadings(sensorRes.data);
           }
 
           // Fetch AI tips
@@ -161,17 +239,33 @@
           if (weatherRes && weatherRes.data) {
             setWeather(weatherRes.data);
           }
+
+          setSecondsSinceUpdate(0);
         } catch (err) {
           setError(err.message || 'Failed to load data');
+          showToast(err.message || 'Data retrieval failed', 'error');
         } finally {
           setLoading(false);
         }
       }
 
+      // Setup 60-second auto-refresh and elapsed counter
       useEffect(() => {
-        if (token) {
-          fetchAllData();
-        }
+        if (!token) return;
+        
+        fetchAllData();
+
+        const timer = setInterval(() => {
+          setSecondsSinceUpdate(function(prev) {
+            if (prev >= 59) {
+              fetchAllData();
+              return 0;
+            }
+            return prev + 1;
+          });
+        }, 1000);
+
+        return () => clearInterval(timer);
       }, [token]);
 
       // Authentication actions
@@ -181,20 +275,30 @@
         setAuthError('');
         try {
           const path = authMode === 'login' ? '/auth/login' : '/auth/register';
+          // Send only email/password to match backend payload spec
           const res = await request(path, {
             method: 'POST',
             body: JSON.stringify({ email: authEmail, password: authPassword })
           });
 
           if (res && res.access_token) {
-            localStorage.setItem('jwt_token', res.access_token);
-            localStorage.setItem('jwt_email', res.email);
-            setToken(res.access_token);
-            setEmail(res.email);
-            showToast('Authenticated successfully as ' + res.email, 'success');
+            setSuccessAnimation(true);
+            setTimeout(() => {
+              localStorage.setItem('jwt_token', res.access_token);
+              localStorage.setItem('jwt_email', res.email);
+              setToken(res.access_token);
+              setEmail(res.email);
+              setSuccessAnimation(false);
+              showToast('Access granted! Welcome ' + (authName || res.email), 'success');
+              // Clear inputs
+              setAuthName('');
+              setAuthEmail('');
+              setAuthPassword('');
+            }, 1500);
           }
         } catch (err) {
           setAuthError(err.message || 'Authentication failed');
+          showToast(err.message || 'Authentication failed', 'error');
         } finally {
           setAuthLoading(false);
         }
@@ -207,6 +311,7 @@
         setEmail('');
         setSchedule(null);
         setSensors([]);
+        setLatestReadings({});
         setTips([]);
         setWeather([]);
         showToast('Signed out successfully', 'info');
@@ -219,15 +324,104 @@
           const res = await request('/optimizer/run', { method: 'POST' });
           if (res && res.data) {
             setSchedule(res.data);
-            showToast('Optimization schedule updated!', 'success');
+            showToast('AI optimizer run complete. Target values updated.', 'success');
             // Refresh insights and history
             const tipsRes = await request('/insights/tips');
             if (tipsRes && tipsRes.data) setTips(tipsRes.data);
+            setSecondsSinceUpdate(0);
           }
         } catch (err) {
           showToast(err.message || 'Optimization trigger failed', 'error');
         } finally {
           setOptLoading(false);
+        }
+      }
+
+      // Refresh Weather forecast
+      async function handleRefreshWeather() {
+        setWeatherRefreshLoading(true);
+        try {
+          const res = await request('/weather/refresh', { method: 'POST' });
+          if (res && res.data) {
+            showToast('Weather forecast successfully updated!', 'success');
+            // Fetch updated current weather
+            const weatherRes = await request('/weather/current');
+            if (weatherRes && weatherRes.data) {
+              setWeather(weatherRes.data);
+            }
+          }
+        } catch (err) {
+          showToast(err.message || 'Weather refresh failed', 'error');
+        } finally {
+          setWeatherRefreshLoading(false);
+        }
+      }
+
+      // Add New Sensor
+      async function handleAddSensor(e) {
+        e.preventDefault();
+        setSensorAdding(true);
+        try {
+          const res = await request('/sensors', {
+            method: 'POST',
+            body: JSON.stringify({
+              name: newSensorName,
+              zone: newSensorZone,
+              kind: newSensorKind,
+              units: newSensorUnits
+            })
+          });
+
+          if (res && res.data) {
+            showToast('Sensor "' + newSensorName + '" added successfully!', 'success');
+            setIsAddSensorOpen(false);
+            // Reset fields
+            setNewSensorName('');
+            setNewSensorUnits('C');
+            // Refetch sensor list
+            const sensorRes = await request('/sensors');
+            if (sensorRes && sensorRes.data) {
+              setSensors(sensorRes.data);
+              fetchLatestReadings(sensorRes.data);
+            }
+          }
+        } catch (err) {
+          showToast(err.message || 'Failed to add sensor', 'error');
+        } finally {
+          setSensorAdding(false);
+        }
+      }
+
+      // Post synthetic sensor reading value
+      async function handlePostReading(sensorId) {
+        const valStr = postValueMap[sensorId];
+        const value = parseFloat(valStr);
+        if (isNaN(value)) {
+          showToast('Please specify a valid numeric coordinate', 'error');
+          return;
+        }
+
+        try {
+          const res = await request('/sensors/' + sensorId + '/readings', {
+            method: 'POST',
+            body: JSON.stringify({ value: value })
+          });
+          if (res && res.data) {
+            showToast('Reading value successfully ingested!', 'success');
+            
+            // Update single reading locally
+            const updatedReadings = Object.assign({}, latestReadings);
+            updatedReadings[sensorId] = res.data;
+            setLatestReadings(updatedReadings);
+
+            // Hide inputs
+            setActiveReadingInputSensorId(null);
+            const updatedInputs = Object.assign({}, postValueMap);
+            updatedInputs[sensorId] = '';
+            setPostValueMap(updatedInputs);
+          }
+        } catch (err) {
+          showToast(err.message || 'Ingestion failed', 'error');
         }
       }
 
@@ -238,12 +432,67 @@
         return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       }
 
+      // Format full date helper
+      function formatDate(isoString) {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        return date.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      }
+
+      // Weather condition calculator
+      function getWeatherIcon(timestamp, solar) {
+        const date = new Date(timestamp);
+        const hour = date.getHours();
+        if (hour >= 6 && hour < 20) {
+          return solar > 300 ? '☀️' : '⛅';
+        }
+        return '🌙';
+      }
+
+      function isCurrentHour(timestamp) {
+        const cardDate = new Date(timestamp);
+        const nowDate = new Date();
+        return cardDate.getDate() === nowDate.getDate() && cardDate.getHours() === nowDate.getHours();
+      }
+
       // If user is not authenticated, render Login/Register panel
       if (!token) {
         return (
-          <div className="flex min-h-screen items-center justify-center p-4" style={{ backgroundColor: '#060B17' }}>
-            <div className="w-full max-w-md p-8 rounded-2xl glass-card relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-teal-500 to-emerald-400" />
+          <div className="relative flex min-h-screen items-center justify-center p-4 overflow-hidden" style={{ backgroundColor: '#060B17' }}>
+            
+            {/* Animated floating particles in background */}
+            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+              <div className="bubble w-40 h-40 top-10 left-10" style={{ animationDelay: '0s' }}></div>
+              <div className="bubble w-60 h-60 bottom-10 right-10" style={{ animationDelay: '-2s' }}></div>
+              <div className="bubble w-32 h-32 top-1/2 left-1/3" style={{ animationDelay: '-4s' }}></div>
+              <div className="bubble w-48 h-48 bottom-1/3 right-1/4" style={{ animationDelay: '-6s' }}></div>
+            </div>
+
+            {/* Success Overlay Animation */}
+            {successAnimation && (
+              <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-navy-950/90 transition-all duration-500">
+                <div className="w-20 h-20 bg-teal-500 rounded-full flex items-center justify-center text-4xl font-bold text-navy-950 animate-ping">
+                  ✓
+                </div>
+                <h2 className="text-xl font-bold text-white mt-6 tracking-wide">Syncing Credentials...</h2>
+                <p className="text-xs text-slate-400 mt-1">Booting Smart Energy Dashboard</p>
+              </div>
+            )}
+
+            {/* Error alerts */}
+            <div className="fixed top-5 right-5 z-50 flex flex-col gap-2">
+              {toasts.map(t => (
+                <div key={t.id} className="flex items-center gap-3 glass-card px-4 py-3 rounded-xl border-l-4 shadow-2xl transition-all"
+                  style={{ borderLeftColor: t.type === 'error' ? '#FB7185' : '#00D4AA' }}>
+                  <span className="text-lg">{t.type === 'error' ? '❌' : 'ℹ️'}</span>
+                  <p className="text-xs font-semibold text-white">{t.message}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Card Frame */}
+            <div className="w-full max-w-md p-8 rounded-2xl glass-card relative z-10 overflow-hidden shadow-2xl" style={{ backdropFilter: 'blur(20px)' }}>
+              <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-teal-500 via-indigo-500 to-emerald-400" />
               
               <div className="text-center mb-8">
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-teal-500 text-navy-950 font-black text-2xl mb-3 shadow-lg shadow-teal-500/20">
@@ -253,17 +502,17 @@
                 <p className="text-sm text-slate-400 mt-1">AI-Powered Home Energy & Carbon Insights</p>
               </div>
 
-              {/* Tab selector */}
-              <div className="flex border-b border-slate-800 mb-6">
+              {/* Tab Selector */}
+              <div className="flex border-b border-slate-800/80 mb-6">
                 <button
                   onClick={() => { setAuthMode('login'); setAuthError(''); }}
-                  className={`flex-1 pb-3 text-sm font-semibold transition-all ${authMode === 'login' ? 'text-teal-500 border-b-2 border-teal-500' : 'text-slate-400'}`}
+                  className={`flex-1 pb-3 text-sm font-semibold transition-all ${authMode === 'login' ? 'text-teal-500 border-b-2 border-teal-500' : 'text-slate-400 hover:text-slate-200'}`}
                 >
                   🔐 Sign In
                 </button>
                 <button
                   onClick={() => { setAuthMode('register'); setAuthError(''); }}
-                  className={`flex-1 pb-3 text-sm font-semibold transition-all ${authMode === 'register' ? 'text-teal-500 border-b-2 border-teal-500' : 'text-slate-400'}`}
+                  className={`flex-1 pb-3 text-sm font-semibold transition-all ${authMode === 'register' ? 'text-teal-500 border-b-2 border-teal-500' : 'text-slate-400 hover:text-slate-200'}`}
                 >
                   ✨ Register
                 </button>
@@ -273,6 +522,20 @@
                 {authError && (
                   <div className="p-3 text-xs bg-red-950/50 border border-red-500/50 text-red-300 rounded-lg">
                     {authError}
+                  </div>
+                )}
+
+                {authMode === 'register' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Full Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={authName}
+                      onChange={(e) => setAuthName(e.target.value)}
+                      placeholder="John Doe"
+                      className="w-full bg-navy-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-all"
+                    />
                   </div>
                 )}
                 
@@ -290,22 +553,34 @@
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-navy-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-all"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full bg-navy-900 border border-slate-800 rounded-xl pl-4 pr-12 py-3 text-sm text-white focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors focus:outline-none text-xs font-bold"
+                    >
+                      {showPassword ? 'HIDE' : 'SHOW'}
+                    </button>
+                  </div>
                 </div>
 
                 <button
                   type="submit"
                   disabled={authLoading}
-                  className="w-full bg-teal-500 text-navy-950 font-bold text-sm rounded-xl py-3 shadow-lg shadow-teal-500/10 hover:shadow-teal-500/25 transition-all hover:bg-teal-400 active:scale-[0.98] disabled:opacity-50"
+                  className="w-full bg-teal-500 text-navy-950 font-bold text-sm rounded-xl py-3 shadow-lg shadow-teal-500/10 hover:shadow-teal-500/25 transition-all hover:bg-teal-400 active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  {authLoading ? 'Verifying...' : authMode === 'login' ? 'Access Dashboard' : 'Create Account'}
+                  {authLoading && (
+                    <span className="inline-block animate-spin w-4 h-4 border-2 border-navy-950 border-t-transparent rounded-full" />
+                  )}
+                  <span>{authLoading ? 'Verifying Credentials...' : authMode === 'login' ? 'Access Dashboard' : 'Create Account'}</span>
                 </button>
               </form>
             </div>
@@ -322,28 +597,105 @@
           }))
         : [];
 
+      // Deduplicate recommendations by title
+      const uniqueTips = [];
+      const seenTitles = {};
+      tips.forEach(t => {
+        if (!seenTitles[t.title]) {
+          seenTitles[t.title] = true;
+          uniqueTips.push(t);
+        }
+      });
+
+      // Filter tips based on tab selection
+      const filteredTips = uniqueTips.filter(t => {
+        if (recommendationCategory === 'All') return true;
+        return t.category.toLowerCase() === recommendationCategory.toLowerCase();
+      });
+
+      // Calculate total potential savings
+      let totalPotentialSavings = 0;
+      filteredTips.forEach(t => {
+        totalPotentialSavings += Math.abs(t.estimated_savings_kwh);
+      });
+
+      // Calculations for Dashboard Stats Row
+      const totalBlocks = schedule && schedule.blocks ? schedule.blocks.length : 0;
+      let avgSetpointVal = 0;
+      let peakLoadVal = 0;
+      let peakLoadHourStr = '--';
+      let activeHvacHours = 0;
+
+      if (schedule && schedule.blocks) {
+        let tempSum = 0;
+        schedule.blocks.forEach(b => {
+          tempSum += b.target_temp_c;
+          if (b.estimated_kwh > peakLoadVal) {
+            peakLoadVal = b.estimated_kwh;
+            peakLoadHourStr = formatTime(b.timestamp);
+          }
+          if (b.target_hvac_mode !== 'off' && b.target_hvac_mode !== 'auto') {
+            activeHvacHours += 1;
+          }
+        });
+        avgSetpointVal = totalBlocks > 0 ? (tempSum / totalBlocks).toFixed(1) : 0;
+      }
+
+      // Calculations for Weather summary
+      let weatherMinTemp = 999;
+      let weatherMaxTemp = -999;
+      weather.forEach(w => {
+        if (w.temperature_c < weatherMinTemp) weatherMinTemp = w.temperature_c;
+        if (w.temperature_c > weatherMaxTemp) weatherMaxTemp = w.temperature_c;
+      });
+      const todayMinMax = weather.length > 0
+        ? "Today: " + weatherMinTemp.toFixed(1) + "°C — " + weatherMaxTemp.toFixed(1) + "°C"
+        : "";
+
+      // Group sensors by zone
+      const sensorsByZone = {};
+      sensors.forEach(s => {
+        const zone = s.zone || 'other';
+        if (!sensorsByZone[zone]) {
+          sensorsByZone[zone] = [];
+        }
+        sensorsByZone[zone].push(s);
+      });
+
       return (
         <div className="flex min-h-screen bg-navy-950">
           
-          {/* Toast Alert */}
-          {toast && (
-            <div className="fixed top-5 right-5 z-50 flex items-center gap-3 glass-card px-4 py-3.5 rounded-xl border-l-4 shadow-2xl animate-bounce"
-              style={{ borderLeftColor: toast.type === 'error' ? '#FB7185' : '#00D4AA' }}>
-              <span className="text-lg">{toast.type === 'error' ? '❌' : 'ℹ️'}</span>
-              <p className="text-xs font-semibold text-white">{toast.message}</p>
-            </div>
-          )}
+          {/* Toast Notification Container */}
+          <div className="fixed top-5 right-5 z-50 flex flex-col gap-2">
+            {toasts.map(t => (
+              <div key={t.id} className="flex items-center gap-3 glass-card px-4 py-3.5 rounded-xl border-l-4 shadow-2xl transition-all"
+                style={{ borderLeftColor: t.type === 'error' ? '#FB7185' : '#00D4AA' }}>
+                <span className="text-lg">{t.type === 'error' ? '❌' : 'ℹ️'}</span>
+                <p className="text-xs font-semibold text-white">{t.message}</p>
+              </div>
+            ))}
+          </div>
 
           {/* Left Navigation Sidebar */}
-          <aside className="w-64 border-r border-slate-800 bg-navy-900 flex flex-col justify-between">
+          <aside className={`border-r border-slate-800 bg-navy-900 flex flex-col justify-between transition-all duration-300 ${sidebarCollapsed ? 'w-20' : 'w-64'}`}>
             <div>
               {/* Brand Header */}
-              <div className="flex items-center gap-3 px-6 py-5 border-b border-slate-800">
-                <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center font-black text-navy-950">⚡</div>
-                <div>
-                  <h2 className="text-sm font-bold text-white tracking-wide">Energy Optimizer</h2>
-                  <p className="text-[10px] text-teal-400 font-semibold tracking-widest uppercase">Smart Home v2.0</p>
+              <div className="flex items-center justify-between px-6 py-5 border-b border-slate-800">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center font-black text-navy-950 flex-shrink-0">⚡</div>
+                  {!sidebarCollapsed && (
+                    <div className="min-w-0">
+                      <h2 className="text-sm font-bold text-white tracking-wide truncate">Energy Optimizer</h2>
+                      <p className="text-[10px] text-teal-400 font-semibold tracking-widest uppercase truncate">Smart Home v2.0</p>
+                    </div>
+                  )}
                 </div>
+                <button
+                  onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                  className="text-slate-400 hover:text-white transition-colors focus:outline-none p-1"
+                >
+                  ☰
+                </button>
               </div>
 
               {/* Navigation Menu */}
@@ -360,7 +712,7 @@
                     className={`w-full text-left px-6 py-3.5 flex items-center gap-4 text-xs font-semibold tracking-wide transition-all ${activeTab === tab.id ? 'active-nav' : 'text-slate-400 hover:text-white'}`}
                   >
                     <span>{tab.icon}</span>
-                    <span>{tab.label}</span>
+                    {!sidebarCollapsed && <span>{tab.label}</span>}
                   </button>
                 ))}
               </nav>
@@ -369,16 +721,19 @@
             {/* User Profile info */}
             <div className="p-4 border-t border-slate-800">
               <div className="flex items-center justify-between">
-                <div className="truncate pr-2">
-                  <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Logged In</p>
-                  <p className="text-xs text-slate-300 font-medium truncate" title={email}>{email}</p>
-                </div>
+                {!sidebarCollapsed && (
+                  <div className="truncate pr-2">
+                    <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Logged In</p>
+                    <p className="text-xs text-slate-300 font-medium truncate" title={email}>{email}</p>
+                  </div>
+                )}
                 <button
                   onClick={handleLogout}
-                  className="p-2 rounded-lg bg-navy-800 border border-slate-700 hover:bg-red-900/30 hover:border-red-500/40 text-slate-400 hover:text-red-400 transition-all text-xs"
+                  className="flex items-center gap-2 p-2.5 rounded-lg bg-navy-800 border border-slate-700 hover:bg-red-900/30 hover:border-red-500/40 text-slate-400 hover:text-red-400 transition-all text-xs font-semibold"
                   title="Sign Out"
                 >
                   🚪
+                  {!sidebarCollapsed && <span>Logout</span>}
                 </button>
               </div>
             </div>
@@ -386,20 +741,31 @@
 
           {/* Main Content Area */}
           <main className="flex-1 p-8 overflow-y-auto">
+            
+            {/* Auto-Refresh Counter in Header */}
+            <div className="flex items-center justify-between text-xs text-slate-500 mb-6 bg-navy-900/40 border border-slate-800/40 rounded-xl px-4 py-2.5">
+              <span>Auto-Refreshing in background</span>
+              <span className="font-semibold text-teal-400">Last updated {secondsSinceUpdate}s ago</span>
+            </div>
+
             {loading ? (
-              <div className="flex h-full items-center justify-center">
-                <div className="text-center space-y-3">
-                  <div className="animate-spin inline-block w-8 h-8 border-4 border-teal-500 border-t-transparent rounded-full" />
-                  <p className="text-xs text-slate-400 font-medium">Fetching real-time updates...</p>
+              // Loading Skeleton Layout
+              <div className="space-y-8 animate-pulse">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  {[1, 2, 3, 4].map(i => (
+                    <div key={i} className="h-28 bg-navy-900/80 border border-slate-800/50 rounded-2xl" />
+                  ))}
                 </div>
+                <div className="h-96 bg-navy-900/80 border border-slate-800/50 rounded-2xl" />
+                <div className="h-60 bg-navy-900/80 border border-slate-800/50 rounded-2xl" />
               </div>
             ) : (
-              <div>
+              <div className="animate-fade-in">
                 
                 {/* Main Content Header */}
                 <div className="flex items-center justify-between mb-8">
                   <div>
-                    <h1 className="text-2xl font-bold text-white capitalize">{activeTab}</h1>
+                    <h1 className="text-2xl font-bold text-white capitalize">{activeTab === 'insights' ? 'AI Recommendations' : activeTab}</h1>
                     <p className="text-xs text-slate-400 mt-1">Smart HVAC Control System & Environment Panel</p>
                   </div>
                   {activeTab === 'dashboard' && (
@@ -414,6 +780,18 @@
                       <span>Run Optimization Run</span>
                     </button>
                   )}
+                  {activeTab === 'weather' && (
+                    <button
+                      onClick={handleRefreshWeather}
+                      disabled={weatherRefreshLoading}
+                      className="bg-teal-500 hover:bg-teal-400 active:scale-[0.98] text-navy-950 text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-teal-500/10 flex items-center gap-2 transition-all disabled:opacity-50"
+                    >
+                      {weatherRefreshLoading ? (
+                        <span className="inline-block animate-spin w-3.5 h-3.5 border-2 border-navy-950 border-t-transparent rounded-full" />
+                      ) : '🌤️'}
+                      <span>Refresh Weather</span>
+                    </button>
+                  )}
                 </div>
 
                 {/* Dashboard Tab Content */}
@@ -423,7 +801,7 @@
                     {/* Dashboard Metric summary Cards */}
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                       
-                      {/* Energy Saved Card */}
+                      {/* Energy Usage Card */}
                       <div className="p-6 rounded-2xl glass-card relative overflow-hidden">
                         <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Energy Usage</div>
                         <div className="text-2xl font-bold text-white mt-2">
@@ -434,7 +812,7 @@
                         </div>
                       </div>
 
-                      {/* Carbon Saved Card */}
+                      {/* Carbon footprint Card */}
                       <div className="p-6 rounded-2xl glass-card relative overflow-hidden">
                         <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Carbon footprint</div>
                         <div className="text-2xl font-bold text-emerald-400 mt-2">
@@ -456,29 +834,41 @@
                         </div>
                       </div>
 
-                      {/* Cost Score Card */}
+                      {/* Cost Efficiency Card (Fixed Logic) */}
                       <div className="p-6 rounded-2xl glass-card relative overflow-hidden">
                         <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Cost Efficiency</div>
-                        <div className="text-2xl font-bold text-teal-400 mt-2">
-                          {schedule ? Math.round(schedule.cost_score * 100) : '--'}%
+                        <div className="text-2xl font-bold mt-2">
+                          {schedule ? (
+                            schedule.baseline_kwh > schedule.optimized_kwh ? (
+                              <span className="text-teal-400">
+                                {Math.round(((schedule.baseline_kwh - schedule.optimized_kwh) / schedule.baseline_kwh) * 100)}% Saved
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 text-lg font-semibold">Baseline match</span>
+                            )
+                          ) : '--'}
                         </div>
-                        <div className="text-xs text-teal-400 font-semibold mt-1">
-                          Savings potential index
+                        <div className="text-xs text-slate-400 mt-1">
+                          Ref: Tariff of $0.22/kWh
                         </div>
                       </div>
 
                     </div>
 
-                    {/* Chart: Hourly setpoints and loads */}
+                    {/* Dual-Axis Chart Setup */}
                     {chartData.length > 0 ? (
-                      <div className="p-6 rounded-2xl glass-card">
-                        <h3 className="text-sm font-semibold text-white mb-6 uppercase tracking-wider">Optimization Schedule & Estimated HVAC Load</h3>
-                        <div className="h-80">
+                      <div className="p-6 rounded-2xl glass-card space-y-8">
+                        <div>
+                          <h3 className="text-sm font-semibold text-white mb-2 uppercase tracking-wider">Optimization Target Settings vs Estimated Power Load</h3>
+                          <p className="text-xs text-slate-400">Comparing target temperature setpoints and estimated HVAC load hourly distributions</p>
+                        </div>
+                        
+                        <div className="h-96">
                           <ResponsiveContainer width="100%" height="100%">
                             <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                               <defs>
                                 <linearGradient id="colorSetpoint" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#A78BFA" stopOpacity={0.2}/>
+                                  <stop offset="5%" stopColor="#A78BFA" stopOpacity={0.25}/>
                                   <stop offset="95%" stopColor="#A78BFA" stopOpacity={0}/>
                                 </linearGradient>
                                 <linearGradient id="colorLoad" x1="0" y1="0" x2="0" y2="1">
@@ -488,14 +878,82 @@
                               </defs>
                               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                               <XAxis dataKey="time" stroke="#64748B" fontSize={11} />
-                              <YAxis stroke="#64748B" fontSize={11} />
+                              
+                              {/* Left Y-Axis for Temperature */}
+                              <YAxis yAxisId="left" stroke="#A78BFA" fontSize={11} domain={[18, 26]} unit="°C" label={{ value: 'Setpoint °C', angle: -90, position: 'insideLeft', offset: 10, fill: '#A78BFA', fontSize: 10 }} />
+                              
+                              {/* Right Y-Axis for Power Load */}
+                              <YAxis yAxisId="right" orientation="right" stroke="#00D4AA" fontSize={11} domain={[0, 3]} unit=" kW" label={{ value: 'Load kW', angle: 90, position: 'insideRight', offset: 10, fill: '#00D4AA', fontSize: 10 }} />
+                              
                               <Tooltip contentStyle={{ backgroundColor: '#0D1528', borderColor: 'rgba(255,255,255,0.1)', color: '#fff', fontSize: '12px' }} />
                               <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                              <Area name="HVAC Target Setpoint (°C)" type="monotone" dataKey="setpoint" stroke="#A78BFA" strokeWidth={2} fillOpacity={1} fill="url(#colorSetpoint)" />
-                              <Area name="Estimated Power Load (kWh)" type="monotone" dataKey="load" stroke="#00D4AA" strokeWidth={2} fillOpacity={1} fill="url(#colorLoad)" />
+                              <Area yAxisId="left" name="Target Temp (°C)" type="monotone" dataKey="setpoint" stroke="#A78BFA" strokeWidth={2} fillOpacity={1} fill="url(#colorSetpoint)" />
+                              <Area yAxisId="right" name="Est. Load (kWh)" type="monotone" dataKey="load" stroke="#00D4AA" strokeWidth={2} fillOpacity={1} fill="url(#colorLoad)" />
                             </AreaChart>
                           </ResponsiveContainer>
                         </div>
+
+                        {/* Summary Stats Row */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-6 border-t border-slate-800/80 text-center">
+                          <div className="p-3 bg-navy-900/60 rounded-xl">
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block tracking-wider">Total blocks</span>
+                            <span className="text-base font-bold text-white block mt-1">{totalBlocks} hours</span>
+                          </div>
+                          <div className="p-3 bg-navy-900/60 rounded-xl">
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block tracking-wider">Avg Setpoint</span>
+                            <span className="text-base font-bold text-purple-400 block mt-1">{avgSetpointVal}°C</span>
+                          </div>
+                          <div className="p-3 bg-navy-900/60 rounded-xl">
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block tracking-wider">Peak load hour</span>
+                            <span className="text-base font-bold text-teal-400 block mt-1">{peakLoadHourStr}</span>
+                          </div>
+                          <div className="p-3 bg-navy-900/60 rounded-xl">
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block tracking-wider">Total Runtime</span>
+                            <span className="text-base font-bold text-emerald-400 block mt-1">{activeHvacHours} hours</span>
+                          </div>
+                        </div>
+
+                        {/* 24-Hour Schedule blocks Table */}
+                        <div className="pt-6 border-t border-slate-800/80">
+                          <h4 className="text-xs font-bold text-white mb-4 uppercase tracking-wider">Hourly Optimization blocks breakdown</h4>
+                          <div className="overflow-x-auto max-h-96 border border-slate-800 rounded-xl">
+                            <table className="w-full text-left">
+                              <thead className="bg-navy-900 text-slate-400 text-xs font-semibold sticky top-0">
+                                <tr>
+                                  <th className="py-3 px-5">Hour</th>
+                                  <th className="py-3 px-5">Target Setpoint</th>
+                                  <th className="py-3 px-5">HVAC Mode</th>
+                                  <th className="py-3 px-5">Estimated Power</th>
+                                  <th className="py-3 px-5 text-right">Comfort Delta</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/60 text-xs">
+                                {schedule.blocks.map((block, idx) => {
+                                  const isHeat = block.target_hvac_mode.toLowerCase() === 'heat';
+                                  const isCool = block.target_hvac_mode.toLowerCase() === 'cool';
+                                  let bgClass = 'hover:bg-navy-800/20';
+                                  if (isHeat) bgClass = 'bg-amber-950/20 hover:bg-amber-950/30 text-amber-300';
+                                  if (isCool) bgClass = 'bg-teal-950/20 hover:bg-teal-950/30 text-teal-300';
+
+                                  return (
+                                    <tr key={idx} className={bgClass}>
+                                      <td className="py-3 px-5 font-mono">{formatTime(block.timestamp)}</td>
+                                      <td className="py-3 px-5 font-bold">{block.target_temp_c}°C</td>
+                                      <td className="py-3 px-5 uppercase">
+                                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${isHeat ? 'bg-amber-500/20 border border-amber-500/30' : isCool ? 'bg-teal-500/20 border border-teal-500/30' : 'bg-slate-800'}`}>
+                                          {block.target_hvac_mode}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-5 font-mono">{block.estimated_kwh} kWh</td>
+                                      <td className="py-3 px-5 text-right font-mono">{block.comfort_delta > 0 ? '+' : ''}{block.comfort_delta}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
                       </div>
                     ) : (
                       <div className="p-12 text-center rounded-2xl glass-card">
@@ -504,86 +962,259 @@
                         <p className="text-xs text-slate-500 mt-1">Click "Run Optimization Run" in the top right to analyze and set schedule target settings.</p>
                       </div>
                     )}
-
-                    {/* Schedule run notes and metadata */}
-                    {schedule && schedule.notes && (
-                      <div className="p-5 rounded-xl bg-navy-900 border border-slate-800 text-xs text-slate-400">
-                        <span className="font-semibold text-slate-300 block mb-1">Optimizer Engine Notes:</span>
-                        {schedule.notes}
-                      </div>
-                    )}
                   </div>
                 )}
 
                 {/* Sensors Tab Content */}
                 {activeTab === 'sensors' && (
-                  <div className="rounded-2xl glass-card overflow-hidden">
-                    <div className="p-6 border-b border-slate-800">
-                      <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Installed Room Sensors</h3>
-                      <p className="text-xs text-slate-400 mt-1">Live physical status checkpoints tracked by the optimizer</p>
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-sm font-bold text-white uppercase tracking-wider">Live Environmental Sensors</h2>
+                      <button
+                        onClick={() => setIsAddSensorOpen(true)}
+                        className="bg-teal-500 hover:bg-teal-400 text-navy-950 text-xs font-bold px-4 py-2 rounded-xl transition-all"
+                      >
+                        ＋ Add New Sensor
+                      </button>
                     </div>
-                    <div className="overflow-x-auto">
-                      {sensors.length > 0 ? (
-                        <table className="w-full text-left">
-                          <thead>
-                            <tr className="bg-navy-900 text-slate-400 text-xs font-semibold border-b border-slate-800">
-                              <th className="py-4 px-6">ID</th>
-                              <th className="py-4 px-6">Sensor Name</th>
-                              <th className="py-4 px-6">Zone</th>
-                              <th className="py-4 px-6">Sensor Type</th>
-                              <th className="py-4 px-6">Standard Unit</th>
-                              <th className="py-4 px-6 text-right">Status</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-800 text-xs text-slate-300">
-                            {sensors.map(sensor => (
-                              <tr key={sensor.id} className="hover:bg-navy-800/40 transition-colors">
-                                <td className="py-4 px-6 font-mono text-[11px] text-slate-500">#{sensor.id}</td>
-                                <td className="py-4 px-6 font-semibold text-white">{sensor.name}</td>
-                                <td className="py-4 px-6">{sensor.zone}</td>
-                                <td className="py-4 px-6 capitalize">{sensor.kind}</td>
-                                <td className="py-4 px-6 font-mono">{sensor.units}</td>
-                                <td className="py-4 px-6 text-right">
-                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold bg-teal-500/10 text-teal-400 border border-teal-500/20">
-                                    ● Active
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : (
-                        <div className="p-12 text-center">
-                          <span className="text-2xl block mb-2">📡</span>
-                          <p className="text-sm font-medium text-slate-400">No home sensors registered in the system database.</p>
+
+                    {/* Sensor list grouped by zone */}
+                    <div className="space-y-8">
+                      {Object.keys(sensorsByZone).map(zone => (
+                        <div key={zone} className="rounded-2xl glass-card overflow-hidden">
+                          <div className="px-6 py-4 bg-navy-900/80 border-b border-slate-800/80 flex items-center justify-between">
+                            <h3 className="text-xs font-bold text-teal-400 uppercase tracking-widest">Zone: {zone.replace('_', ' ')}</h3>
+                            <span className="text-[10px] text-slate-400 font-semibold">{sensorsByZone[zone].length} sensor(s)</span>
+                          </div>
+                          
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left">
+                              <thead className="bg-navy-950 text-slate-400 text-[10px] font-bold uppercase tracking-wider border-b border-slate-800">
+                                <tr>
+                                  <th className="py-3 px-6">Sensor ID</th>
+                                  <th className="py-3 px-6">Name</th>
+                                  <th className="py-3 px-6">Type</th>
+                                  <th className="py-3 px-6">Last Value</th>
+                                  <th className="py-3 px-6">Timestamp</th>
+                                  <th className="py-3 px-6 text-right">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/60 text-xs text-slate-300">
+                                {sensorsByZone[zone].map(sensor => {
+                                  const latestReading = latestReadings[sensor.id];
+                                  
+                                  // Color code sensor types
+                                  let typeBadgeClass = 'bg-slate-800 text-slate-400';
+                                  if (sensor.kind === 'temperature') typeBadgeClass = 'bg-blue-500/10 text-blue-400 border border-blue-500/20';
+                                  if (sensor.kind === 'occupancy') typeBadgeClass = 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+                                  if (sensor.kind === 'power') typeBadgeClass = 'bg-amber-500/10 text-amber-400 border border-amber-500/20';
+                                  if (sensor.kind === 'humidity') typeBadgeClass = 'bg-teal-500/10 text-teal-400 border border-teal-500/20';
+
+                                  return (
+                                    <tr key={sensor.id} className="hover:bg-navy-800/20 transition-colors">
+                                      <td className="py-4 px-6 font-mono text-slate-500">#{sensor.id}</td>
+                                      <td className="py-4 px-6 font-semibold text-white">{sensor.name}</td>
+                                      <td className="py-4 px-6">
+                                        <span className={`inline-block px-2.5 py-0.5 rounded text-[10px] font-bold uppercase ${typeBadgeClass}`}>
+                                          {sensor.kind}
+                                        </span>
+                                      </td>
+                                      <td className="py-4 px-6 font-bold text-white">
+                                        {latestReading ? latestReading.value + ' ' + sensor.units : '--'}
+                                      </td>
+                                      <td className="py-4 px-6 text-slate-400">
+                                        {latestReading ? formatDate(latestReading.recorded_at) : '--'}
+                                      </td>
+                                      <td className="py-4 px-6 text-right">
+                                        {activeReadingInputSensorId === sensor.id ? (
+                                          <div className="inline-flex items-center gap-2">
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="Value"
+                                              value={postValueMap[sensor.id] || ''}
+                                              onChange={(e) => {
+                                                const updatedValues = Object.assign({}, postValueMap);
+                                                updatedValues[sensor.id] = e.target.value;
+                                                setPostValueMap(updatedValues);
+                                              }}
+                                              className="w-20 bg-navy-950 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none"
+                                            />
+                                            <button
+                                              onClick={() => handlePostReading(sensor.id)}
+                                              className="bg-teal-500 hover:bg-teal-400 text-navy-950 font-bold px-2 py-1 rounded text-xs"
+                                            >
+                                              ✓
+                                            </button>
+                                            <button
+                                              onClick={() => setActiveReadingInputSensorId(null)}
+                                              className="bg-slate-800 hover:bg-slate-700 text-slate-400 px-2 py-1 rounded text-xs"
+                                            >
+                                              ✕
+                                            </button>
+                                          </div>
+                                        ) : (
+                                          <button
+                                            onClick={() => setActiveReadingInputSensorId(sensor.id)}
+                                            className="text-xs text-teal-400 hover:underline"
+                                          >
+                                            Post Reading
+                                          </button>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
-                      )}
+                      ))}
                     </div>
+
+                    {/* Sensor Creation Modal */}
+                    {isAddSensorOpen && (
+                      <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/80 p-4">
+                        <div className="w-full max-w-md p-6 rounded-2xl glass-card shadow-2xl relative">
+                          <h3 className="text-base font-bold text-white mb-4 uppercase tracking-wider">Configure New Sensor</h3>
+                          
+                          <form onSubmit={handleAddSensor} className="space-y-4">
+                            <div>
+                              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Sensor Name</label>
+                              <input
+                                type="text"
+                                required
+                                value={newSensorName}
+                                onChange={(e) => setNewSensorName(e.target.value)}
+                                placeholder="Living Room Temperature Sensor"
+                                className="w-full bg-navy-900 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-teal-500 transition-all"
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Zone</label>
+                                <select
+                                  value={newSensorZone}
+                                  onChange={(e) => setNewSensorZone(e.target.value)}
+                                  className="w-full bg-navy-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-teal-500"
+                                >
+                                  <option value="bedroom">Bedroom</option>
+                                  <option value="living_room">Living Room</option>
+                                  <option value="office">Office</option>
+                                  <option value="panel">Panel</option>
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Type</label>
+                                <select
+                                  value={newSensorKind}
+                                  onChange={(e) => setNewSensorKind(e.target.value)}
+                                  className="w-full bg-navy-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-teal-500"
+                                >
+                                  <option value="temperature">Temperature</option>
+                                  <option value="occupancy">Occupancy</option>
+                                  <option value="power">Power</option>
+                                  <option value="humidity">Humidity</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Standard Unit</label>
+                              <input
+                                type="text"
+                                required
+                                value={newSensorUnits}
+                                onChange={(e) => setNewSensorUnits(e.target.value)}
+                                placeholder="C"
+                                className="w-full bg-navy-900 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-teal-500"
+                              />
+                            </div>
+
+                            <div className="flex gap-3 justify-end pt-4">
+                              <button
+                                type="button"
+                                onClick={() => setIsAddSensorOpen(false)}
+                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-4 py-2 rounded-xl text-xs"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={sensorAdding}
+                                className="bg-teal-500 hover:bg-teal-400 text-navy-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-2"
+                              >
+                                {sensorAdding && (
+                                  <span className="inline-block animate-spin w-3 h-3 border-2 border-navy-950 border-t-transparent rounded-full" />
+                                )}
+                                <span>Save Sensor</span>
+                              </button>
+                            </div>
+
+                          </form>
+                        </div>
+                      </div>
+                    )}
+
                   </div>
                 )}
 
-                {/* AI Recommendations Tab Content */}
+                {/* AI Insights Tab Content */}
                 {activeTab === 'insights' && (
                   <div className="space-y-6">
-                    {tips.length > 0 ? (
+                    
+                    {/* Filter controls and summary row */}
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-navy-900/60 border border-slate-800/80 p-5 rounded-2xl">
+                      <div className="flex items-center gap-2">
+                        {['All', 'Schedule', 'Comfort', 'General'].map(cat => (
+                          <button
+                            key={cat}
+                            onClick={() => setRecommendationCategory(cat)}
+                            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all ${recommendationCategory === cat ? 'bg-teal-500 text-navy-950 font-bold shadow-md shadow-teal-500/10' : 'bg-navy-800 text-slate-400 hover:text-white'}`}
+                          >
+                            {cat}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-xs text-slate-400">Category Potential Savings:</span>
+                        <span className="text-sm font-bold text-teal-400 block mt-0.5">
+                          {totalPotentialSavings.toFixed(1)} kWh across {filteredTips.length} recommendation(s)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Recommendations grid */}
+                    {filteredTips.length > 0 ? (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {tips.map(tip => (
+                        {filteredTips.map(tip => (
                           <div key={tip.id} className="p-6 rounded-2xl glass-card relative overflow-hidden flex flex-col justify-between border-l-4 border-l-teal-500">
                             <div>
                               <div className="flex items-center justify-between mb-4">
                                 <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${tip.category === 'schedule' ? 'bg-purple-950 text-purple-400 border border-purple-800/50' : tip.category === 'comfort' ? 'bg-amber-950 text-amber-400 border border-amber-800/50' : 'bg-slate-900 text-slate-400'}`}>
                                   {tip.category}
                                 </span>
-                                <span className="text-xs font-semibold text-slate-400">
-                                  Confidence: {Math.round(tip.confidence * 100)}%
-                                </span>
                               </div>
                               <h3 className="text-sm font-bold text-white mb-2">{tip.title}</h3>
-                              <p className="text-xs text-slate-400 leading-relaxed mb-6">{tip.detail}</p>
+                              <p className="text-xs text-slate-400 leading-relaxed mb-4">{tip.detail}</p>
+                              
+                              {/* Confidence Progress Bar */}
+                              <div className="mb-6">
+                                <div className="flex justify-between text-[10px] text-slate-500 font-bold mb-1">
+                                  <span>Confidence Index</span>
+                                  <span>{Math.round(tip.confidence * 100)}%</span>
+                                </div>
+                                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                                  <div className="bg-teal-500 h-full transition-all" style={{ width: Math.round(tip.confidence * 100) + '%' }} />
+                                </div>
+                              </div>
                             </div>
                             <div className="pt-4 border-t border-slate-800/60 flex items-center justify-between">
-                              <span className="text-xs text-slate-400">Estimated Savings:</span>
-                              <span className="text-sm font-bold text-teal-400">-{tip.estimated_savings_kwh} kWh</span>
+                              <span className="text-xs text-slate-400">Savings Impact:</span>
+                              <span className="text-sm font-bold text-teal-400">+{Math.abs(tip.estimated_savings_kwh)} kWh</span>
                             </div>
                           </div>
                         ))}
@@ -601,20 +1232,56 @@
                 {/* Weather Forecast Tab Content */}
                 {activeTab === 'weather' && (
                   <div className="space-y-8">
+                    
+                    {/* Min/Max temp block */}
+                    {weather.length > 0 && (
+                      <div className="p-5 rounded-2xl bg-navy-900 border border-slate-800/80 flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-bold text-white uppercase tracking-wider">Local Temperature Range</h3>
+                          <p className="text-xs text-slate-400 mt-1">Calculated min/max limits over the 24h forecast run</p>
+                        </div>
+                        <div className="text-base font-bold text-teal-400 tracking-wider">
+                          {todayMinMax}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Temperature trend Line Chart */}
+                    {weather.length > 0 && (
+                      <div className="p-6 rounded-2xl glass-card">
+                        <h3 className="text-sm font-semibold text-white mb-6 uppercase tracking-wider">24-Hour Temperature forecast curve</h3>
+                        <div className="h-60">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={weather.map(w => ({ time: formatTime(w.timestamp), temp: w.temperature_c }))} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                              <XAxis dataKey="time" stroke="#64748B" fontSize={11} />
+                              <YAxis stroke="#64748B" fontSize={11} domain={['auto', 'auto']} unit="°C" />
+                              <Tooltip contentStyle={{ backgroundColor: '#0D1528', borderColor: 'rgba(255,255,255,0.1)', color: '#fff', fontSize: '12px' }} />
+                              <Line type="monotone" dataKey="temp" stroke="#00D4AA" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Hourly weather Grid */}
                     {weather.length > 0 ? (
                       <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-                        {weather.map((w, idx) => (
-                          <div key={idx} className="p-4 rounded-xl bg-navy-900/60 border border-slate-800/60 text-center space-y-3">
-                            <div className="text-[10px] font-semibold text-slate-400">{formatTime(w.timestamp)}</div>
-                            <div className="text-2xl">
-                              {w.solar_irradiance_wm2 > 200 ? '☀️' : '🌙'}
+                        {weather.map((w, idx) => {
+                          const active = isCurrentHour(w.timestamp);
+                          return (
+                            <div key={idx} className={`p-4 rounded-xl text-center space-y-3 bg-navy-900/60 border ${active ? 'border-teal-500 shadow-lg shadow-teal-500/5' : 'border-slate-800/60'}`}>
+                              <div className="text-[10px] font-bold text-slate-400">{formatTime(w.timestamp)}</div>
+                              <div className="text-2xl">
+                                {getWeatherIcon(w.timestamp, w.solar_irradiance_wm2)}
+                              </div>
+                              <div className="text-base font-bold text-white">{w.temperature_c}°C</div>
+                              <div className="text-[9px] text-slate-500 font-semibold uppercase">
+                                Rad: {Math.round(w.solar_irradiance_wm2)} W/m²
+                              </div>
                             </div>
-                            <div className="text-base font-bold text-white">{w.temperature_c}°C</div>
-                            <div className="text-[10px] text-slate-500 font-medium">
-                              Hum: {w.humidity}% | Sol: {Math.round(w.solar_irradiance_wm2)}W/m²
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="p-12 text-center rounded-2xl glass-card">
