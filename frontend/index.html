@@ -6,7 +6,7 @@
   <title>Smart Home Energy Optimizer</title>
   <meta name="description" content="AI-Powered HVAC Optimizer, Carbon footprint tracking, and Home Energy Insights." />
   
-  <!-- CSS Styling & Icons -->
+  <!-- CSS Styling & Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -48,6 +48,9 @@
   </script>
 
   <style>
+    html {
+      scroll-behavior: smooth;
+    }
     body {
       background-color: #060B17;
       color: #E2E8F0;
@@ -74,6 +77,13 @@
       background: radial-gradient(circle at 30% 30%, rgba(0, 212, 170, 0.25), transparent);
       filter: blur(12px);
       animation: float-bubble 10s ease-in-out infinite;
+    }
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 10px rgba(0, 212, 170, 0.4); }
+      50% { box-shadow: 0 0 25px rgba(0, 212, 170, 0.8); }
+    }
+    .chatbot-glow {
+      animation: pulse-glow 2s infinite;
     }
     /* Custom Scrollbar */
     ::-webkit-scrollbar {
@@ -107,6 +117,7 @@
       // Auth State
       const [token, setToken] = useState(localStorage.getItem('jwt_token') || '');
       const [email, setEmail] = useState(localStorage.getItem('jwt_email') || '');
+      const [viewMode, setViewMode] = useState(localStorage.getItem('jwt_token') ? 'dashboard' : 'landing'); // 'landing', 'login', 'dashboard'
       const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
       const [authName, setAuthName] = useState('');
       const [authEmail, setAuthEmail] = useState('');
@@ -118,6 +129,14 @@
 
       // Collapsible Sidebar
       const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+      // Chatbot State
+      const [chatOpen, setChatOpen] = useState(false);
+      const [messages, setMessages] = useState([]);
+      const [chatInput, setChatInput] = useState('');
+      const [chatLoading, setChatLoading] = useState(false);
+      const [apiKeyInput, setApiKeyInput] = useState(localStorage.getItem('anthropic_api_key') || '');
+      const [showApiKeySetting, setShowApiKeySetting] = useState(false);
 
       // Data States
       const [activeTab, setActiveTab] = useState('dashboard');
@@ -149,6 +168,9 @@
 
       // Recommendation Filter category state
       const [recommendationCategory, setRecommendationCategory] = useState('All');
+
+      // Scroll ref for chat log autoscroll
+      const chatEndRef = useRef(null);
 
       // Trigger standard API request helper
       async function request(path, options) {
@@ -214,27 +236,22 @@
         setLoading(true);
         setError('');
         try {
-          // Fetch latest schedule
           const schedRes = await request('/schedules/latest');
           if (schedRes && schedRes.data) {
             setSchedule(schedRes.data);
           }
 
-          // Fetch sensors
           const sensorRes = await request('/sensors');
           if (sensorRes && sensorRes.data) {
             setSensors(sensorRes.data);
-            // Parallel fetch latest reading per sensor
             fetchLatestReadings(sensorRes.data);
           }
 
-          // Fetch AI tips
           const tipsRes = await request('/insights/tips');
           if (tipsRes && tipsRes.data) {
             setTips(tipsRes.data);
           }
 
-          // Fetch weather forecast
           const weatherRes = await request('/weather/current');
           if (weatherRes && weatherRes.data) {
             setWeather(weatherRes.data);
@@ -268,6 +285,123 @@
         return () => clearInterval(timer);
       }, [token]);
 
+      // Autoscroll chat
+      useEffect(() => {
+        if (chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+        }
+      }, [messages, chatLoading]);
+
+      // Save API key
+      function saveApiKey(key) {
+        localStorage.setItem('anthropic_api_key', key);
+        setApiKeyInput(key);
+        showToast('Anthropic API Key saved locally!', 'success');
+        setShowApiKeySetting(false);
+      }
+
+      // Chat Bot Submit
+      async function handleSendChat(textToSend) {
+        const inputMsg = textToSend || chatInput;
+        if (!inputMsg.trim()) return;
+
+        // Add user message to state
+        const updatedMessages = messages.concat([{ role: 'user', content: inputMsg }]);
+        setMessages(updatedMessages);
+        setChatInput('');
+        setChatLoading(true);
+
+        const systemPrompt = "You are an AI energy assistant for a Smart Home Energy Optimizer application. You have expert knowledge about:\n- The user's home has sensors in bedroom, living_room, office, and panel zones\n- The system uses FastAPI backend with SQLModel/SQLite\n- It pulls weather from Open-Meteo API every 60 minutes\n- The AI optimizer computes 24h HVAC schedules using thermal models\n- Carbon footprint uses 0.386 kg CO2 per kWh\n- Comfort band is 20.5°C to 23.5°C\n- The system tracks temperature, occupancy, power sensors\n\nYou can help users with:\n- Explaining their energy usage and recommendations\n- Answering questions about their HVAC schedule\n- Giving tips to save energy\n- Explaining what comfort score and cost efficiency mean\n- Answering questions about carbon footprint\n- Explaining how the optimization algorithm works\n\nKeep responses concise, friendly, and focused on energy saving. Use bullet points for clarity.";
+
+        // Predefined fallbacks in case API Key is missing or CORS blocks the request
+        const localMockAnswers = {
+          "how does the optimizer work?": "The AI Optimizer uses a thermal dynamics model of your home combined with the 24-hour weather forecast from Open-Meteo. It calculates the heat transfer through walls and windows, then schedules HVAC heating or cooling blocks to run during periods of mild outdoor temperature. By pre-cooling or pre-heating before tariff peak hours and accounting for occupancy, it reduces overall grid draw while keeping the indoor temperature within the comfort band (20.5°C to 23.5°C).",
+          "why is my comfort score low?": "A low comfort score means the indoor temperature has deviated from the target comfort band (20.5°C to 23.5°C). This can happen during:\n- Extreme outdoor weather where the HVAC cannot keep up.\n- Unoccupied periods where the optimizer intentionally lets the temperature drift to save energy.\n- System calibration issues with sensor readings.",
+          "how can i save more energy?": "Here are top tips:\n- Narrow your comfort band during unoccupied hours.\n- Enable predictive pre-cooling before heat peaks.\n- Adjust setpoints by 1°C; each degree can save up to 6% in HVAC power.\n- Seal windows in zones showing high deviation (e.g. living room).",
+          "what does carbon footprint mean?": "Your carbon footprint represents the greenhouse gas emissions generated by your electricity usage. The system assumes a grid carbon intensity of **0.386 kg CO₂ per kWh** (US average). The optimizer tracks how many kilograms of CO₂ are prevented by reducing grid consumption during optimization runs.",
+          "explain my current schedule": "The optimizer divides the day into 24 hourly blocks. For each block, it sets a target temperature and mode (COOL/HEAT/OFF). It shifts high-load operations to off-peak tariff periods or times with cooler outdoor temperatures to maximize efficiency."
+        };
+
+        const normalizedInput = inputMsg.toLowerCase().trim();
+        const apiKey = apiKeyInput || localStorage.getItem('anthropic_api_key');
+
+        // Check if we should fallback directly (no key)
+        if (!apiKey) {
+          setTimeout(() => {
+            let reply = "Direct browser requests to Anthropic API are blocked by CORS policies. However, I can still assist you! Here is the information on your query:\n\n";
+            let matched = false;
+            
+            Object.keys(localMockAnswers).forEach(key => {
+              if (normalizedInput.includes(key) || key.includes(normalizedInput)) {
+                reply += localMockAnswers[key];
+                matched = true;
+              }
+            });
+
+            if (!matched) {
+              reply += "I'm your AI Energy Assistant. To use the live Anthropic Claude model directly from your browser, click the gear icon above and enter your Anthropic API Key. Otherwise, you can ask about: \n- 'How does the optimizer work?'\n- 'Why is my comfort score low?'\n- 'How can I save more energy?'\n- 'What does carbon footprint mean?'\n- 'Explain my current schedule'";
+            }
+
+            setMessages(updatedMessages.concat([{ role: 'assistant', content: reply }]));
+            setChatLoading(false);
+          }, 1000);
+          return;
+        }
+
+        // Attempt actual Anthropic API call
+        try {
+          const apiMessages = updatedMessages.map(m => ({ role: m.role, content: m.content }));
+          
+          const res = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+              "anthropic-dangerously-allow-browser": "true"
+            },
+            body: JSON.stringify({
+              model: "claude-3-5-sonnet-20241022", // Use standard Sonnet 3.5 model identifier
+              max_tokens: 1000,
+              system: systemPrompt,
+              messages: apiMessages
+            })
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData && errData.error && errData.error.message ? errData.error.message : 'API call failed');
+          }
+
+          const resData = await res.json();
+          const assistantReply = resData && resData.content && resData.content[0] && resData.content[0].text
+            ? resData.content[0].text
+            : 'No response text received.';
+
+          setMessages(updatedMessages.concat([{ role: 'assistant', content: assistantReply }]));
+        } catch (err) {
+          // Handle API errors / CORS blocks gracefully by falling back to local mocks
+          console.error(err);
+          let fallbackReply = "CORS restriction or API Key error detected. Falling back to local assistant knowledge:\n\n";
+          let matched = false;
+
+          Object.keys(localMockAnswers).forEach(key => {
+            if (normalizedInput.includes(key) || key.includes(normalizedInput)) {
+              fallbackReply += localMockAnswers[key];
+              matched = true;
+            }
+          });
+
+          if (!matched) {
+            fallbackReply += "I'm your AI Energy Assistant. Ask me pre-defined topics or clear your API key to use simulated responses. Questions you can try:\n- 'How does the optimizer work?'\n- 'Why is my comfort score low?'\n- 'How can I save more energy?'\n- 'What does carbon footprint mean?'\n- 'Explain my current schedule'";
+          }
+
+          setMessages(updatedMessages.concat([{ role: 'assistant', content: fallbackReply }]));
+        } finally {
+          setChatLoading(false);
+        }
+      }
+
       // Authentication actions
       async function handleAuth(e) {
         e.preventDefault();
@@ -275,7 +409,6 @@
         setAuthError('');
         try {
           const path = authMode === 'login' ? '/auth/login' : '/auth/register';
-          // Send only email/password to match backend payload spec
           const res = await request(path, {
             method: 'POST',
             body: JSON.stringify({ email: authEmail, password: authPassword })
@@ -289,8 +422,8 @@
               setToken(res.access_token);
               setEmail(res.email);
               setSuccessAnimation(false);
+              setViewMode('dashboard');
               showToast('Access granted! Welcome ' + (authName || res.email), 'success');
-              // Clear inputs
               setAuthName('');
               setAuthEmail('');
               setAuthPassword('');
@@ -314,6 +447,7 @@
         setLatestReadings({});
         setTips([]);
         setWeather([]);
+        setViewMode('landing');
         showToast('Signed out successfully', 'info');
       }
 
@@ -325,7 +459,6 @@
           if (res && res.data) {
             setSchedule(res.data);
             showToast('AI optimizer run complete. Target values updated.', 'success');
-            // Refresh insights and history
             const tipsRes = await request('/insights/tips');
             if (tipsRes && tipsRes.data) setTips(tipsRes.data);
             setSecondsSinceUpdate(0);
@@ -344,7 +477,6 @@
           const res = await request('/weather/refresh', { method: 'POST' });
           if (res && res.data) {
             showToast('Weather forecast successfully updated!', 'success');
-            // Fetch updated current weather
             const weatherRes = await request('/weather/current');
             if (weatherRes && weatherRes.data) {
               setWeather(weatherRes.data);
@@ -375,10 +507,8 @@
           if (res && res.data) {
             showToast('Sensor "' + newSensorName + '" added successfully!', 'success');
             setIsAddSensorOpen(false);
-            // Reset fields
             setNewSensorName('');
             setNewSensorUnits('C');
-            // Refetch sensor list
             const sensorRes = await request('/sensors');
             if (sensorRes && sensorRes.data) {
               setSensors(sensorRes.data);
@@ -409,12 +539,10 @@
           if (res && res.data) {
             showToast('Reading value successfully ingested!', 'success');
             
-            // Update single reading locally
             const updatedReadings = Object.assign({}, latestReadings);
             updatedReadings[sensorId] = res.data;
             setLatestReadings(updatedReadings);
 
-            // Hide inputs
             setActiveReadingInputSensorId(null);
             const updatedInputs = Object.assign({}, postValueMap);
             updatedInputs[sensorId] = '';
@@ -455,18 +583,310 @@
         return cardDate.getDate() === nowDate.getDate() && cardDate.getHours() === nowDate.getHours();
       }
 
-      // If user is not authenticated, render Login/Register panel
-      if (!token) {
+      // Format blocks for Recharts consumption
+      const chartData = schedule && schedule.blocks
+        ? schedule.blocks.map(b => ({
+            time: formatTime(b.timestamp),
+            setpoint: b.target_temp_c,
+            load: b.estimated_kwh
+          }))
+        : [];
+
+      // Deduplicate recommendations by title
+      const uniqueTips = [];
+      const seenTitles = {};
+      tips.forEach(t => {
+        if (!seenTitles[t.title]) {
+          seenTitles[t.title] = true;
+          uniqueTips.push(t);
+        }
+      });
+
+      // Filter tips based on tab selection
+      const filteredTips = uniqueTips.filter(t => {
+        if (recommendationCategory === 'All') return true;
+        return t.category.toLowerCase() === recommendationCategory.toLowerCase();
+      });
+
+      // Calculate total potential savings
+      let totalPotentialSavings = 0;
+      filteredTips.forEach(t => {
+        totalPotentialSavings += Math.abs(t.estimated_savings_kwh);
+      });
+
+      // Calculations for Dashboard Stats Row
+      const totalBlocks = schedule && schedule.blocks ? schedule.blocks.length : 0;
+      let avgSetpointVal = 0;
+      let peakLoadVal = 0;
+      let peakLoadHourStr = '--';
+      let activeHvacHours = 0;
+
+      if (schedule && schedule.blocks) {
+        let tempSum = 0;
+        schedule.blocks.forEach(b => {
+          tempSum += b.target_temp_c;
+          if (b.estimated_kwh > peakLoadVal) {
+            peakLoadVal = b.estimated_kwh;
+            peakLoadHourStr = formatTime(b.timestamp);
+          }
+          if (b.target_hvac_mode !== 'off' && b.target_hvac_mode !== 'auto') {
+            activeHvacHours += 1;
+          }
+        });
+        avgSetpointVal = totalBlocks > 0 ? (tempSum / totalBlocks).toFixed(1) : 0;
+      }
+
+      // Calculations for Weather summary
+      let weatherMinTemp = 999;
+      let weatherMaxTemp = -999;
+      weather.forEach(w => {
+        if (w.temperature_c < weatherMinTemp) weatherMinTemp = w.temperature_c;
+        if (w.temperature_c > weatherMaxTemp) weatherMaxTemp = w.temperature_c;
+      });
+
+      const todayMinMax = weather.length > 0
+        ? "Today: " + weatherMinTemp.toFixed(1) + "°C — " + weatherMaxTemp.toFixed(1) + "°C"
+        : "";
+
+      // Group sensors by zone
+      const sensorsByZone = {};
+      sensors.forEach(s => {
+        const zone = s.zone || 'other';
+        if (!sensorsByZone[zone]) {
+          sensorsByZone[zone] = [];
+        }
+        sensorsByZone[zone].push(s);
+      });
+
+      // ────────────────────────────────────────────────────────
+      // RENDER SECTION 1: LANDING PAGE
+      // ────────────────────────────────────────────────────────
+      if (viewMode === 'landing') {
+        return (
+          <div className="relative min-h-screen bg-navy-950 text-slate-100 flex flex-col justify-between">
+            
+            {/* Animated particles in background */}
+            <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+              <div className="bubble w-48 h-48 top-20 left-10" style={{ animationDelay: '0s' }}></div>
+              <div className="bubble w-72 h-72 bottom-20 right-20" style={{ animationDelay: '-3s' }}></div>
+              <div className="bubble w-36 h-36 top-1/2 left-2/3" style={{ animationDelay: '-6s' }}></div>
+            </div>
+
+            {/* STICKY TOP NAVBAR */}
+            <header className="sticky top-0 z-50 glass-card border-b border-slate-800/80 px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3 cursor-pointer" onClick={() => setViewMode('landing')}>
+                <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center font-black text-navy-950">⚡</div>
+                <h1 className="text-base font-bold tracking-wide text-white">SmartHome Optimizer</h1>
+              </div>
+              
+              <nav className="hidden md:flex items-center gap-6 text-xs font-semibold tracking-wider text-slate-400">
+                <a href="#how-it-works" className="hover:text-teal-400 transition-colors">HOW IT WORKS</a>
+                <a href="#features" className="hover:text-teal-400 transition-colors">FEATURES</a>
+                <a href="#tech-stack" className="hover:text-teal-400 transition-colors">TECH STACK</a>
+              </nav>
+
+              <button
+                onClick={() => setViewMode('login')}
+                className="border border-teal-500 hover:bg-teal-500/10 text-teal-400 text-xs font-bold px-4 py-2 rounded-xl transition-all"
+              >
+                Sign In
+              </button>
+            </header>
+
+            {/* HERO SECTION */}
+            <section id="hero" className="relative z-10 max-w-5xl mx-auto px-6 py-20 text-center flex-1 flex flex-col justify-center">
+              <h2 className="text-4xl md:text-6xl font-extrabold text-white tracking-tight leading-none mb-6">
+                Smart Home <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-emerald-400">Energy Optimizer</span>
+              </h2>
+              
+              <p className="max-w-2xl mx-auto text-sm md:text-base text-slate-400 leading-relaxed mb-10">
+                AI-powered HVAC control that learns your home, cuts energy bills, and tracks your carbon footprint in real time.
+              </p>
+
+              <div className="flex flex-wrap justify-center gap-4 mb-14">
+                <button
+                  onClick={() => setViewMode('login')}
+                  className="bg-teal-500 hover:bg-teal-400 active:scale-[0.98] text-navy-950 text-sm font-bold px-8 py-3.5 rounded-xl shadow-lg shadow-teal-500/20 transition-all"
+                >
+                  Get Started →
+                </button>
+                <button
+                  onClick={() => setViewMode('login')}
+                  className="border border-slate-700 hover:border-slate-500 text-slate-300 text-sm font-semibold px-8 py-3.5 rounded-xl transition-all"
+                >
+                  View Demo
+                </button>
+              </div>
+
+              {/* Stats Ticker */}
+              <div className="inline-flex justify-center flex-wrap gap-x-6 gap-y-2 bg-navy-900/60 border border-slate-800/80 px-6 py-3 rounded-full text-xs text-slate-400 max-w-3xl mx-auto font-medium">
+                <span>⚡ <strong>26.4 kWh</strong> monitored</span>
+                <span className="text-slate-700">|</span>
+                <span>🌱 <strong>10.2 kg CO₂</strong> tracked</span>
+                <span className="text-slate-700">|</span>
+                <span>📡 <strong>8 sensors</strong> active</span>
+                <span className="text-slate-700">|</span>
+                <span>😊 <strong>64%</strong> comfort score</span>
+              </div>
+            </section>
+
+            {/* HOW IT WORKS SECTION */}
+            <section id="how-it-works" className="relative z-10 max-w-5xl mx-auto px-6 py-20 border-t border-slate-900">
+              <div className="text-center mb-12">
+                <h3 className="text-2xl font-bold text-white uppercase tracking-wider">How It Works</h3>
+                <p className="text-xs text-slate-500 mt-1">Four steps to absolute climate efficiency</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-center">
+                
+                {/* Step 1 */}
+                <div className="p-6 rounded-2xl bg-navy-900 border border-slate-800 text-center relative">
+                  <div className="text-3xl mb-4">🌡️</div>
+                  <h4 className="text-sm font-bold text-white mb-2">1. Sensors collect data</h4>
+                  <p className="text-xs text-slate-400">Temperature, occupancy, power readings ingested live</p>
+                </div>
+
+                {/* Arrow 1 */}
+                <div className="hidden md:block text-center text-teal-500 text-xl font-bold">→</div>
+                
+                {/* Step 2 */}
+                <div className="p-6 rounded-2xl bg-navy-900 border border-slate-800 text-center">
+                  <div className="text-3xl mb-4">🌤️</div>
+                  <h4 className="text-sm font-bold text-white mb-2">2. Weather synced</h4>
+                  <p className="text-xs text-slate-400">Open-Meteo API pulls 24h outdoor forecast every hour</p>
+                </div>
+
+                {/* Arrow 2 */}
+                <div className="hidden md:block text-center text-teal-500 text-xl font-bold">→</div>
+
+                {/* Step 3 */}
+                <div className="p-6 rounded-2xl bg-navy-900 border border-slate-800 text-center">
+                  <div className="text-3xl mb-4">🤖</div>
+                  <h4 className="text-sm font-bold text-white mb-2">3. AI optimizes</h4>
+                  <p className="text-xs text-slate-400">Thermal model computes ideal HVAC setpoints per hour</p>
+                </div>
+
+                {/* Arrow 3 */}
+                <div className="hidden md:block text-center text-teal-500 text-xl font-bold">→</div>
+
+                {/* Step 4 */}
+                <div className="p-6 rounded-2xl bg-navy-900 border border-slate-800 text-center">
+                  <div className="text-3xl mb-4">💡</div>
+                  <h4 className="text-sm font-bold text-white mb-2">4. Insights delivered</h4>
+                  <p className="text-xs text-slate-400">Actionable recommendations with savings estimates</p>
+                </div>
+
+              </div>
+            </section>
+
+            {/* FEATURES SECTION */}
+            <section id="features" className="relative z-10 max-w-5xl mx-auto px-6 py-20 border-t border-slate-900">
+              <div className="text-center mb-12">
+                <h3 className="text-2xl font-bold text-white uppercase tracking-wider">System Features</h3>
+                <p className="text-xs text-slate-500 mt-1">Smart architecture for optimized comfort and bill reduction</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {[
+                  { icon: '⚡', title: 'Real-time Monitoring', text: 'Live sensor readings from multiple zones across the home.' },
+                  { icon: '🧠', title: 'AI Schedule Engine', title2: 'Engine', text: '24h optimized target HVAC setpoints automatically computed.' },
+                  { icon: '🌱', title: 'Carbon Tracking', text: 'Granular CO₂ footprint mapping per kWh consumed.' },
+                  { icon: '☀️', title: 'Solar Integration', text: 'Weather direct solar radiation adjusted target offsets.' },
+                  { icon: '🔐', title: 'Secure Auth', text: 'Safe JWT verification with customized user database scope.' },
+                  { icon: '📊', title: 'Analytics', text: 'Detailed daily summaries, trends, and room power allocations.' }
+                ].map((feat, idx) => (
+                  <div key={idx} className="p-6 rounded-2xl glass-card flex flex-col justify-between">
+                    <div>
+                      <div className="text-2xl mb-4">{feat.icon}</div>
+                      <h4 className="text-sm font-bold text-white mb-2">{feat.title}</h4>
+                      <p className="text-xs text-slate-400 leading-relaxed">{feat.text}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* TECH STACK SECTION */}
+            <section id="tech-stack" className="relative z-10 max-w-5xl mx-auto px-6 py-20 border-t border-slate-900 text-center w-full">
+              <h3 className="text-2xl font-bold text-white uppercase tracking-wider mb-8">Built With Modern Tech</h3>
+              
+              <div className="flex flex-wrap justify-center gap-3">
+                {[
+                  { name: 'FastAPI', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
+                  { name: 'SQLModel', color: 'bg-blue-500/10 text-blue-400 border-blue-500/20' },
+                  { name: 'SQLite', color: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' },
+                  { name: 'Open-Meteo API', color: 'bg-sky-500/10 text-sky-400 border-sky-500/20' },
+                  { name: 'React', color: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' },
+                  { name: 'Recharts', color: 'bg-purple-500/10 text-purple-400 border-purple-500/20' },
+                  { name: 'JWT Auth', color: 'bg-amber-500/10 text-amber-400 border-amber-500/20' }
+                ].map(badge => (
+                  <span key={badge.name} className={`px-4 py-2 rounded-full border text-xs font-semibold ${badge.color}`}>
+                    {badge.name}
+                  </span>
+                ))}
+              </div>
+            </section>
+
+            {/* FOOTER */}
+            <footer className="relative z-10 border-t border-slate-900 bg-navy-950/80 py-10 px-6 text-center text-xs text-slate-500 space-y-3">
+              <p className="font-bold text-slate-300">Smart Home Energy Optimizer v2.0</p>
+              <p>Built by <strong>Rajiv N Thakker</strong></p>
+              <p>
+                <a href="https://github.com/Rajiv6165/smart-home-energy-optimizer" target="_blank" className="text-teal-400 hover:underline">
+                  GitHub Project Repository
+                </a>
+              </p>
+              <p>© 2025 All rights reserved</p>
+            </footer>
+
+            {/* FLOATING CHAT BOT */}
+            <ChatBot
+              chatOpen={chatOpen}
+              setChatOpen={setChatOpen}
+              messages={messages}
+              chatInput={chatInput}
+              setChatInput={setChatInput}
+              chatLoading={chatLoading}
+              handleSendChat={handleSendChat}
+              apiKeyInput={apiKeyInput}
+              saveApiKey={saveApiKey}
+              showApiKeySetting={showApiKeySetting}
+              setShowApiKeySetting={setShowApiKeySetting}
+              chatEndRef={chatEndRef}
+            />
+
+          </div>
+        );
+      }
+
+      // ────────────────────────────────────────────────────────
+      // RENDER SECTION 2: LOGIN PAGE
+      // ────────────────────────────────────────────────────────
+      if (viewMode === 'login') {
         return (
           <div className="relative flex min-h-screen items-center justify-center p-4 overflow-hidden" style={{ backgroundColor: '#060B17' }}>
             
             {/* Animated floating particles in background */}
-            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+            <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
               <div className="bubble w-40 h-40 top-10 left-10" style={{ animationDelay: '0s' }}></div>
               <div className="bubble w-60 h-60 bottom-10 right-10" style={{ animationDelay: '-2s' }}></div>
               <div className="bubble w-32 h-32 top-1/2 left-1/3" style={{ animationDelay: '-4s' }}></div>
               <div className="bubble w-48 h-48 bottom-1/3 right-1/4" style={{ animationDelay: '-6s' }}></div>
             </div>
+
+            {/* Navigation back to landing */}
+            <header className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-10">
+              <div className="flex items-center gap-3 cursor-pointer" onClick={() => setViewMode('landing')}>
+                <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center font-black text-navy-950">⚡</div>
+                <h1 className="text-sm font-bold text-white tracking-wide">SmartHome</h1>
+              </div>
+              <button
+                onClick={() => setViewMode('landing')}
+                className="text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+              >
+                ← Back to Home
+              </button>
+            </header>
 
             {/* Success Overlay Animation */}
             {successAnimation && (
@@ -478,17 +898,6 @@
                 <p className="text-xs text-slate-400 mt-1">Booting Smart Energy Dashboard</p>
               </div>
             )}
-
-            {/* Error alerts */}
-            <div className="fixed top-5 right-5 z-50 flex flex-col gap-2">
-              {toasts.map(t => (
-                <div key={t.id} className="flex items-center gap-3 glass-card px-4 py-3 rounded-xl border-l-4 shadow-2xl transition-all"
-                  style={{ borderLeftColor: t.type === 'error' ? '#FB7185' : '#00D4AA' }}>
-                  <span className="text-lg">{t.type === 'error' ? '❌' : 'ℹ️'}</span>
-                  <p className="text-xs font-semibold text-white">{t.message}</p>
-                </div>
-              ))}
-            </div>
 
             {/* Card Frame */}
             <div className="w-full max-w-md p-8 rounded-2xl glass-card relative z-10 overflow-hidden shadow-2xl" style={{ backdropFilter: 'blur(20px)' }}>
@@ -584,97 +993,32 @@
                 </button>
               </form>
             </div>
+
+            {/* FLOATING CHAT BOT */}
+            <ChatBot
+              chatOpen={chatOpen}
+              setChatOpen={setChatOpen}
+              messages={messages}
+              chatInput={chatInput}
+              setChatInput={setChatInput}
+              chatLoading={chatLoading}
+              handleSendChat={handleSendChat}
+              apiKeyInput={apiKeyInput}
+              saveApiKey={saveApiKey}
+              showApiKeySetting={showApiKeySetting}
+              setShowApiKeySetting={setShowApiKeySetting}
+              chatEndRef={chatEndRef}
+            />
+
           </div>
         );
       }
 
-      // Format blocks for Recharts consumption
-      const chartData = schedule && schedule.blocks
-        ? schedule.blocks.map(b => ({
-            time: formatTime(b.timestamp),
-            setpoint: b.target_temp_c,
-            load: b.estimated_kwh
-          }))
-        : [];
-
-      // Deduplicate recommendations by title
-      const uniqueTips = [];
-      const seenTitles = {};
-      tips.forEach(t => {
-        if (!seenTitles[t.title]) {
-          seenTitles[t.title] = true;
-          uniqueTips.push(t);
-        }
-      });
-
-      // Filter tips based on tab selection
-      const filteredTips = uniqueTips.filter(t => {
-        if (recommendationCategory === 'All') return true;
-        return t.category.toLowerCase() === recommendationCategory.toLowerCase();
-      });
-
-      // Calculate total potential savings
-      let totalPotentialSavings = 0;
-      filteredTips.forEach(t => {
-        totalPotentialSavings += Math.abs(t.estimated_savings_kwh);
-      });
-
-      // Calculations for Dashboard Stats Row
-      const totalBlocks = schedule && schedule.blocks ? schedule.blocks.length : 0;
-      let avgSetpointVal = 0;
-      let peakLoadVal = 0;
-      let peakLoadHourStr = '--';
-      let activeHvacHours = 0;
-
-      if (schedule && schedule.blocks) {
-        let tempSum = 0;
-        schedule.blocks.forEach(b => {
-          tempSum += b.target_temp_c;
-          if (b.estimated_kwh > peakLoadVal) {
-            peakLoadVal = b.estimated_kwh;
-            peakLoadHourStr = formatTime(b.timestamp);
-          }
-          if (b.target_hvac_mode !== 'off' && b.target_hvac_mode !== 'auto') {
-            activeHvacHours += 1;
-          }
-        });
-        avgSetpointVal = totalBlocks > 0 ? (tempSum / totalBlocks).toFixed(1) : 0;
-      }
-
-      // Calculations for Weather summary
-      let weatherMinTemp = 999;
-      let weatherMaxTemp = -999;
-      weather.forEach(w => {
-        if (w.temperature_c < weatherMinTemp) weatherMinTemp = w.temperature_c;
-        if (w.temperature_c > weatherMaxTemp) weatherMaxTemp = w.temperature_c;
-      });
-      const todayMinMax = weather.length > 0
-        ? "Today: " + weatherMinTemp.toFixed(1) + "°C — " + weatherMaxTemp.toFixed(1) + "°C"
-        : "";
-
-      // Group sensors by zone
-      const sensorsByZone = {};
-      sensors.forEach(s => {
-        const zone = s.zone || 'other';
-        if (!sensorsByZone[zone]) {
-          sensorsByZone[zone] = [];
-        }
-        sensorsByZone[zone].push(s);
-      });
-
+      // ────────────────────────────────────────────────────────
+      // RENDER SECTION 3: DASHBOARD MAIN PAGE (Default existing)
+      // ────────────────────────────────────────────────────────
       return (
         <div className="flex min-h-screen bg-navy-950">
-          
-          {/* Toast Notification Container */}
-          <div className="fixed top-5 right-5 z-50 flex flex-col gap-2">
-            {toasts.map(t => (
-              <div key={t.id} className="flex items-center gap-3 glass-card px-4 py-3.5 rounded-xl border-l-4 shadow-2xl transition-all"
-                style={{ borderLeftColor: t.type === 'error' ? '#FB7185' : '#00D4AA' }}>
-                <span className="text-lg">{t.type === 'error' ? '❌' : 'ℹ️'}</span>
-                <p className="text-xs font-semibold text-white">{t.message}</p>
-              </div>
-            ))}
-          </div>
 
           {/* Left Navigation Sidebar */}
           <aside className={`border-r border-slate-800 bg-navy-900 flex flex-col justify-between transition-all duration-300 ${sidebarCollapsed ? 'w-20' : 'w-64'}`}>
@@ -1294,7 +1638,202 @@
 
               </div>
             )}
+
+            {/* FLOATING CHAT BOT */}
+            <ChatBot
+              chatOpen={chatOpen}
+              setChatOpen={setChatOpen}
+              messages={messages}
+              chatInput={chatInput}
+              setChatInput={setChatInput}
+              chatLoading={chatLoading}
+              handleSendChat={handleSendChat}
+              apiKeyInput={apiKeyInput}
+              saveApiKey={saveApiKey}
+              showApiKeySetting={showApiKeySetting}
+              setShowApiKeySetting={setShowApiKeySetting}
+              chatEndRef={chatEndRef}
+            />
+
           </main>
+
+        </div>
+      );
+    }
+
+    // ────────────────────────────────────────────────────────
+    // SUB-COMPONENT: AI CHAT BOT WIDGET
+    // ────────────────────────────────────────────────────────
+    function ChatBot(props) {
+      const chatOpen = props.chatOpen;
+      const setChatOpen = props.setChatOpen;
+      const messages = props.messages;
+      const chatInput = props.chatInput;
+      const setChatInput = props.setChatInput;
+      const chatLoading = props.chatLoading;
+      const handleSendChat = props.handleSendChat;
+      const apiKeyInput = props.apiKeyInput;
+      const saveApiKey = props.saveApiKey;
+      const showApiKeySetting = props.showApiKeySetting;
+      const setShowApiKeySetting = props.setShowApiKeySetting;
+      const chatEndRef = props.chatEndRef;
+
+      const [localKey, setLocalKey] = useState(apiKeyInput);
+
+      return (
+        <div className="fixed bottom-6 right-6 z-[100] flex flex-col items-end">
+          
+          {/* Chat Panel Box */}
+          {chatOpen && (
+            <div className="w-[350px] h-[500px] rounded-2xl glass-card shadow-2xl flex flex-col justify-between mb-4 overflow-hidden animate-fade-in relative z-50">
+              
+              {/* Header */}
+              <div className="px-4 py-3 bg-navy-900 border-b border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-teal-400">⚡</span>
+                  <span className="text-xs font-bold text-white tracking-wider">Energy Assistant</span>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  {/* Settings toggle */}
+                  <button
+                    onClick={() => setShowApiKeySetting(!showApiKeySetting)}
+                    className="text-slate-400 hover:text-white text-xs"
+                    title="Configure API Key"
+                  >
+                    ⚙️
+                  </button>
+                  <button
+                    onClick={() => setChatOpen(false)}
+                    className="text-slate-400 hover:text-white font-bold text-sm"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {/* API Key Configuration form overlay */}
+              {showApiKeySetting && (
+                <div className="absolute inset-0 bg-navy-950/95 z-30 p-6 flex flex-col justify-center">
+                  <h4 className="text-xs font-bold text-white mb-2 uppercase tracking-wider">Anthropic API Key Setup</h4>
+                  <p className="text-[10px] text-slate-400 leading-relaxed mb-4">
+                    Claude requires an Anthropic API Key. Input your key below to connect. Cleared keys will fallback to synthetic optimizer mock instructions.
+                  </p>
+                  
+                  <input
+                    type="password"
+                    value={localKey}
+                    onChange={(e) => setLocalKey(e.target.value)}
+                    placeholder="sk-ant-..."
+                    className="bg-navy-900 border border-slate-800 rounded px-3 py-2 text-xs text-white mb-3 focus:outline-none w-full"
+                  />
+                  
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => saveApiKey(localKey)}
+                      className="bg-teal-500 hover:bg-teal-400 text-navy-950 font-bold text-xs px-3 py-1.5 rounded"
+                    >
+                      Save Key
+                    </button>
+                    <button
+                      onClick={() => {
+                        saveApiKey('');
+                        setLocalKey('');
+                      }}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-3 py-1.5 rounded"
+                    >
+                      Clear Key
+                    </button>
+                    <button
+                      onClick={() => setShowApiKeySetting(false)}
+                      className="bg-navy-900 text-slate-500 text-xs px-3 py-1.5 rounded"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Chat Messages Area */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-navy-950/40">
+                
+                {/* Predefined Quick Questions */}
+                {messages.length === 0 && (
+                  <div className="space-y-2 py-4">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-3">Quick Actions</p>
+                    {[
+                      "How does the optimizer work?",
+                      "Why is my comfort score low?",
+                      "How can I save more energy?",
+                      "What does carbon footprint mean?",
+                      "Explain my current schedule"
+                    ].map(q => (
+                      <button
+                        key={q}
+                        onClick={() => handleSendChat(q)}
+                        className="w-full text-left bg-navy-900 border border-slate-800/80 rounded-xl px-4 py-2 text-[11px] text-teal-400 hover:bg-teal-500/10 hover:border-teal-500/30 transition-all font-medium"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Message list bubble elements */}
+                {messages.map((m, idx) => {
+                  const isUser = m.role === 'user';
+                  return (
+                    <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed whitespace-pre-wrap ${isUser ? 'bg-teal-500 text-navy-950 font-medium' : 'bg-navy-900 border border-slate-800 text-slate-200'}`}>
+                        {m.content}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Typing status indicator */}
+                {chatLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-navy-900 border border-slate-800 rounded-2xl px-4 py-2 text-xs flex gap-1 items-center">
+                      <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
+                      <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+                      <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Input bottom area */}
+              <div className="p-3 border-t border-slate-800 bg-navy-900 flex gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSendChat(); }}
+                  placeholder="Ask a question..."
+                  disabled={chatLoading}
+                  className="flex-1 bg-navy-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-500"
+                />
+                <button
+                  onClick={() => handleSendChat()}
+                  disabled={chatLoading}
+                  className="bg-teal-500 hover:bg-teal-400 text-navy-950 font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center transition-all disabled:opacity-50"
+                >
+                  Send
+                </button>
+              </div>
+
+            </div>
+          )}
+
+          {/* Floating trigger CTA button */}
+          <button
+            onClick={() => setChatOpen(!chatOpen)}
+            className="w-14 h-14 rounded-full bg-teal-500 text-navy-950 font-bold text-xl flex items-center justify-center shadow-2xl transition-all active:scale-95 focus:outline-none chatbot-glow cursor-pointer relative z-50 hover:bg-teal-400"
+          >
+            {chatOpen ? '✕' : '🤖'}
+          </button>
 
         </div>
       );
