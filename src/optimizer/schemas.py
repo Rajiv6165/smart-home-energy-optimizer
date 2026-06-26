@@ -1,7 +1,18 @@
 from datetime import datetime
-from typing import List, Optional
-
+from typing import List, Optional, Generic, TypeVar
 from pydantic import BaseModel, Field
+
+T = TypeVar("T")
+
+
+class MetaSchema(BaseModel):
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    version: str = "1.0"
+
+
+class ResponseEnvelope(BaseModel, Generic[T]):
+    data: T
+    meta: MetaSchema = Field(default_factory=MetaSchema)
 
 
 class SensorCreate(BaseModel):
@@ -11,8 +22,14 @@ class SensorCreate(BaseModel):
     units: str
 
 
+class SensorUpdate(BaseModel):
+    name: Optional[str] = None
+    zone: Optional[str] = None
+
+
 class SensorRead(SensorCreate):
     id: int
+    is_deleted: bool
     created_at: datetime
 
 
@@ -49,6 +66,8 @@ class ScheduleResponse(BaseModel):
     optimized_kwh: float
     comfort_score: float
     cost_score: float
+    carbon_kg: Optional[float] = None
+    carbon_saved_kg: Optional[float] = None
     blocks: List[ScheduleBlockRead]
 
 
@@ -60,3 +79,36 @@ class RecommendationRead(BaseModel):
     confidence: float = Field(ge=0, le=1)
     category: str
     created_at: datetime
+
+
+class AlertConfigCreate(BaseModel):
+    sensor_id: int
+    threshold_value: float
+    operator: str = ">"  # '>', '<', '>=', '<='
+    is_active: bool = True
+
+
+class AlertConfigRead(AlertConfigCreate):
+    id: int
+    created_at: datetime
+
+
+class DailySummaryRead(BaseModel):
+    date: str
+    avg_temperature: Optional[float] = None
+    avg_occupancy: Optional[float] = None
+    total_kwh: Optional[float] = None
+
+
+class ZoneBreakdownRead(BaseModel):
+    zone: str
+    energy_usage_kwh: float
+    percentage: float
+
+
+class SensorStatsRead(BaseModel):
+    sensor_id: int
+    min_value: float
+    max_value: float
+    avg_value: float
+    trend: str  # "upward" | "downward" | "stable" | "insufficient_data"

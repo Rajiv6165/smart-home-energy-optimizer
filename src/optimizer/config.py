@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     weather_refresh_minutes: int = 60
     schedule_refresh_minutes: int = 90
 
+    # JWT Authentication
+    jwt_secret_key: str = Field(
+        default="change-me-in-production-use-a-32-char-random-string",
+        description="Secret key for signing JWT tokens",
+    )
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

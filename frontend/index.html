@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Home Energy Optimizer</title>
+  <meta name="description" content="AI-Powered HVAC Optimizer, Carbon footprint tracking, and Home Energy Insights." />
+  
+  <!-- CSS Styling & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  
+  <!-- CDNs for React, ReactDOM, Recharts, Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Tailwind Configuration -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            navy: {
+              950: '#060B17',
+              900: '#0A0F1E',
+              800: '#0D1528',
+              700: '#121C33',
+              600: '#1E2D54',
+              500: '#2A3E75'
+            },
+            teal: {
+              400: '#2DDCB5',
+              500: '#00D4AA',
+              600: '#00B891'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'sans-serif']
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    body {
+      background-color: #060B17;
+      color: #E2E8F0;
+      font-family: 'Inter', sans-serif;
+    }
+    .glass-card {
+      background: rgba(13, 21, 40, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(12px);
+    }
+    .active-nav {
+      background: rgba(0, 212, 170, 0.12);
+      color: #00D4AA;
+      border-left: 3px solid #00D4AA;
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="root"></div>
+
+  <!-- React Application Source (Transpiled by Babel) -->
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = Recharts;
+
+    const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
+      ? 'http://localhost:8000'
+      : window.location.origin;
+
+    function App() {
+      // Auth State
+      const [token, setToken] = useState(localStorage.getItem('jwt_token') || '');
+      const [email, setEmail] = useState(localStorage.getItem('jwt_email') || '');
+      const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+      const [authEmail, setAuthEmail] = useState('');
+      const [authPassword, setAuthPassword] = useState('');
+      const [authError, setAuthError] = useState('');
+      const [authLoading, setAuthLoading] = useState(false);
+
+      // Data States
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [schedule, setSchedule] = useState(null);
+      const [sensors, setSensors] = useState([]);
+      const [tips, setTips] = useState([]);
+      const [weather, setWeather] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [optLoading, setOptLoading] = useState(false);
+      const [error, setError] = useState('');
+      const [toast, setToast] = useState(null);
+
+      // Trigger standard API request helper
+      async function request(path, options) {
+        const url = API_BASE + path;
+        const defaultHeaders = {
+          'Content-Type': 'application/json'
+        };
+        if (token) {
+          defaultHeaders['Authorization'] = 'Bearer ' + token;
+        }
+
+        const fetchOptions = Object.assign({ headers: defaultHeaders }, options);
+        const res = await fetch(url, fetchOptions);
+        
+        if (res.status === 401) {
+          // Automatic logout on unauthorized API access
+          handleLogout();
+          throw new Error('Session expired. Please sign in again.');
+        }
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          const errMsg = body && body.detail ? body.detail : 'An error occurred';
+          throw new Error(errMsg);
+        }
+
+        return res.json();
+      }
+
+      // Show temporary toast notification
+      function showToast(message, type) {
+        setToast({ message, type: type || 'success' });
+        setTimeout(() => setToast(null), 4000);
+      }
+
+      // Fetch all dashboard data
+      async function fetchAllData() {
+        if (!token) return;
+        setLoading(true);
+        setError('');
+        try {
+          // Fetch latest schedule
+          const schedRes = await request('/schedules/latest');
+          if (schedRes && schedRes.data) {
+            setSchedule(schedRes.data);
+          }
+
+          // Fetch sensors
+          const sensorRes = await request('/sensors');
+          if (sensorRes && sensorRes.data) {
+            setSensors(sensorRes.data);
+          }
+
+          // Fetch AI tips
+          const tipsRes = await request('/insights/tips');
+          if (tipsRes && tipsRes.data) {
+            setTips(tipsRes.data);
+          }
+
+          // Fetch weather forecast
+          const weatherRes = await request('/weather/current');
+          if (weatherRes && weatherRes.data) {
+            setWeather(weatherRes.data);
+          }
+        } catch (err) {
+          setError(err.message || 'Failed to load data');
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      useEffect(() => {
+        if (token) {
+          fetchAllData();
+        }
+      }, [token]);
+
+      // Authentication actions
+      async function handleAuth(e) {
+        e.preventDefault();
+        setAuthLoading(true);
+        setAuthError('');
+        try {
+          const path = authMode === 'login' ? '/auth/login' : '/auth/register';
+          const res = await request(path, {
+            method: 'POST',
+            body: JSON.stringify({ email: authEmail, password: authPassword })
+          });
+
+          if (res && res.access_token) {
+            localStorage.setItem('jwt_token', res.access_token);
+            localStorage.setItem('jwt_email', res.email);
+            setToken(res.access_token);
+            setEmail(res.email);
+            showToast('Authenticated successfully as ' + res.email, 'success');
+          }
+        } catch (err) {
+          setAuthError(err.message || 'Authentication failed');
+        } finally {
+          setAuthLoading(false);
+        }
+      }
+
+      function handleLogout() {
+        localStorage.removeItem('jwt_token');
+        localStorage.removeItem('jwt_email');
+        setToken('');
+        setEmail('');
+        setSchedule(null);
+        setSensors([]);
+        setTips([]);
+        setWeather([]);
+        showToast('Signed out successfully', 'info');
+      }
+
+      // Optimize actions
+      async function handleRunOptimizer() {
+        setOptLoading(true);
+        try {
+          const res = await request('/optimizer/run', { method: 'POST' });
+          if (res && res.data) {
+            setSchedule(res.data);
+            showToast('Optimization schedule updated!', 'success');
+            // Refresh insights and history
+            const tipsRes = await request('/insights/tips');
+            if (tipsRes && tipsRes.data) setTips(tipsRes.data);
+          }
+        } catch (err) {
+          showToast(err.message || 'Optimization trigger failed', 'error');
+        } finally {
+          setOptLoading(false);
+        }
+      }
+
+      // Format timestamp helper
+      function formatTime(isoString) {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
+
+      // If user is not authenticated, render Login/Register panel
+      if (!token) {
+        return (
+          <div className="flex min-h-screen items-center justify-center p-4" style={{ backgroundColor: '#060B17' }}>
+            <div className="w-full max-w-md p-8 rounded-2xl glass-card relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-teal-500 to-emerald-400" />
+              
+              <div className="text-center mb-8">
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-teal-500 text-navy-950 font-black text-2xl mb-3 shadow-lg shadow-teal-500/20">
+                  ⚡
+                </div>
+                <h1 className="text-2xl font-bold text-white leading-tight">Energy Optimizer</h1>
+                <p className="text-sm text-slate-400 mt-1">AI-Powered Home Energy & Carbon Insights</p>
+              </div>
+
+              {/* Tab selector */}
+              <div className="flex border-b border-slate-800 mb-6">
+                <button
+                  onClick={() => { setAuthMode('login'); setAuthError(''); }}
+                  className={`flex-1 pb-3 text-sm font-semibold transition-all ${authMode === 'login' ? 'text-teal-500 border-b-2 border-teal-500' : 'text-slate-400'}`}
+                >
+                  🔐 Sign In
+                </button>
+                <button
+                  onClick={() => { setAuthMode('register'); setAuthError(''); }}
+                  className={`flex-1 pb-3 text-sm font-semibold transition-all ${authMode === 'register' ? 'text-teal-500 border-b-2 border-teal-500' : 'text-slate-400'}`}
+                >
+                  ✨ Register
+                </button>
+              </div>
+
+              <form onSubmit={handleAuth} className="space-y-4">
+                {authError && (
+                  <div className="p-3 text-xs bg-red-950/50 border border-red-500/50 text-red-300 rounded-lg">
+                    {authError}
+                  </div>
+                )}
+                
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Email Address</label>
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="name@domain.com"
+                    className="w-full bg-navy-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full bg-navy-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-all"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full bg-teal-500 text-navy-950 font-bold text-sm rounded-xl py-3 shadow-lg shadow-teal-500/10 hover:shadow-teal-500/25 transition-all hover:bg-teal-400 active:scale-[0.98] disabled:opacity-50"
+                >
+                  {authLoading ? 'Verifying...' : authMode === 'login' ? 'Access Dashboard' : 'Create Account'}
+                </button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      // Format blocks for Recharts consumption
+      const chartData = schedule && schedule.blocks
+        ? schedule.blocks.map(b => ({
+            time: formatTime(b.timestamp),
+            setpoint: b.target_temp_c,
+            load: b.estimated_kwh
+          }))
+        : [];
+
+      return (
+        <div className="flex min-h-screen bg-navy-950">
+          
+          {/* Toast Alert */}
+          {toast && (
+            <div className="fixed top-5 right-5 z-50 flex items-center gap-3 glass-card px-4 py-3.5 rounded-xl border-l-4 shadow-2xl animate-bounce"
+              style={{ borderLeftColor: toast.type === 'error' ? '#FB7185' : '#00D4AA' }}>
+              <span className="text-lg">{toast.type === 'error' ? '❌' : 'ℹ️'}</span>
+              <p className="text-xs font-semibold text-white">{toast.message}</p>
+            </div>
+          )}
+
+          {/* Left Navigation Sidebar */}
+          <aside className="w-64 border-r border-slate-800 bg-navy-900 flex flex-col justify-between">
+            <div>
+              {/* Brand Header */}
+              <div className="flex items-center gap-3 px-6 py-5 border-b border-slate-800">
+                <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center font-black text-navy-950">⚡</div>
+                <div>
+                  <h2 className="text-sm font-bold text-white tracking-wide">Energy Optimizer</h2>
+                  <p className="text-[10px] text-teal-400 font-semibold tracking-widest uppercase">Smart Home v2.0</p>
+                </div>
+              </div>
+
+              {/* Navigation Menu */}
+              <nav className="mt-6 flex flex-col space-y-1">
+                {[
+                  { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+                  { id: 'sensors', label: 'Live Sensors', icon: '📡' },
+                  { id: 'insights', label: 'AI Recommendations', icon: '💡' },
+                  { id: 'weather', label: 'Weather Forecast', icon: '🌤️' }
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`w-full text-left px-6 py-3.5 flex items-center gap-4 text-xs font-semibold tracking-wide transition-all ${activeTab === tab.id ? 'active-nav' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    <span>{tab.icon}</span>
+                    <span>{tab.label}</span>
+                  </button>
+                ))}
+              </nav>
+            </div>
+
+            {/* User Profile info */}
+            <div className="p-4 border-t border-slate-800">
+              <div className="flex items-center justify-between">
+                <div className="truncate pr-2">
+                  <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Logged In</p>
+                  <p className="text-xs text-slate-300 font-medium truncate" title={email}>{email}</p>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="p-2 rounded-lg bg-navy-800 border border-slate-700 hover:bg-red-900/30 hover:border-red-500/40 text-slate-400 hover:text-red-400 transition-all text-xs"
+                  title="Sign Out"
+                >
+                  🚪
+                </button>
+              </div>
+            </div>
+          </aside>
+
+          {/* Main Content Area */}
+          <main className="flex-1 p-8 overflow-y-auto">
+            {loading ? (
+              <div className="flex h-full items-center justify-center">
+                <div className="text-center space-y-3">
+                  <div className="animate-spin inline-block w-8 h-8 border-4 border-teal-500 border-t-transparent rounded-full" />
+                  <p className="text-xs text-slate-400 font-medium">Fetching real-time updates...</p>
+                </div>
+              </div>
+            ) : (
+              <div>
+                
+                {/* Main Content Header */}
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h1 className="text-2xl font-bold text-white capitalize">{activeTab}</h1>
+                    <p className="text-xs text-slate-400 mt-1">Smart HVAC Control System & Environment Panel</p>
+                  </div>
+                  {activeTab === 'dashboard' && (
+                    <button
+                      onClick={handleRunOptimizer}
+                      disabled={optLoading}
+                      className="bg-teal-500 hover:bg-teal-400 active:scale-[0.98] text-navy-950 text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-teal-500/10 flex items-center gap-2 transition-all disabled:opacity-50"
+                    >
+                      {optLoading ? (
+                        <span className="inline-block animate-spin w-3.5 h-3.5 border-2 border-navy-950 border-t-transparent rounded-full" />
+                      ) : '⚡'}
+                      <span>Run Optimization Run</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Dashboard Tab Content */}
+                {activeTab === 'dashboard' && (
+                  <div className="space-y-8">
+                    
+                    {/* Dashboard Metric summary Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      
+                      {/* Energy Saved Card */}
+                      <div className="p-6 rounded-2xl glass-card relative overflow-hidden">
+                        <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Energy Usage</div>
+                        <div className="text-2xl font-bold text-white mt-2">
+                          {schedule ? schedule.optimized_kwh : '--'} <span className="text-xs font-normal text-slate-400">kWh</span>
+                        </div>
+                        <div className="text-xs text-teal-400 font-semibold mt-1">
+                          Baseline: {schedule ? schedule.baseline_kwh : '--'} kWh
+                        </div>
+                      </div>
+
+                      {/* Carbon Saved Card */}
+                      <div className="p-6 rounded-2xl glass-card relative overflow-hidden">
+                        <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Carbon footprint</div>
+                        <div className="text-2xl font-bold text-emerald-400 mt-2">
+                          {schedule ? schedule.carbon_kg : '--'} <span className="text-xs font-normal text-slate-400">kg CO₂</span>
+                        </div>
+                        <div className="text-xs text-emerald-400 font-semibold mt-1">
+                          Saved: {schedule ? schedule.carbon_saved_kg : '--'} kg CO₂
+                        </div>
+                      </div>
+
+                      {/* Comfort Score Card */}
+                      <div className="p-6 rounded-2xl glass-card relative overflow-hidden">
+                        <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Comfort Index</div>
+                        <div className="text-2xl font-bold text-white mt-2">
+                          {schedule ? Math.round(schedule.comfort_score * 100) : '--'}%
+                        </div>
+                        <div className="text-xs text-slate-400 mt-1">
+                          Target band compliance
+                        </div>
+                      </div>
+
+                      {/* Cost Score Card */}
+                      <div className="p-6 rounded-2xl glass-card relative overflow-hidden">
+                        <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Cost Efficiency</div>
+                        <div className="text-2xl font-bold text-teal-400 mt-2">
+                          {schedule ? Math.round(schedule.cost_score * 100) : '--'}%
+                        </div>
+                        <div className="text-xs text-teal-400 font-semibold mt-1">
+                          Savings potential index
+                        </div>
+                      </div>
+
+                    </div>
+
+                    {/* Chart: Hourly setpoints and loads */}
+                    {chartData.length > 0 ? (
+                      <div className="p-6 rounded-2xl glass-card">
+                        <h3 className="text-sm font-semibold text-white mb-6 uppercase tracking-wider">Optimization Schedule & Estimated HVAC Load</h3>
+                        <div className="h-80">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <defs>
+                                <linearGradient id="colorSetpoint" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#A78BFA" stopOpacity={0.2}/>
+                                  <stop offset="95%" stopColor="#A78BFA" stopOpacity={0}/>
+                                </linearGradient>
+                                <linearGradient id="colorLoad" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#00D4AA" stopOpacity={0.3}/>
+                                  <stop offset="95%" stopColor="#00D4AA" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                              <XAxis dataKey="time" stroke="#64748B" fontSize={11} />
+                              <YAxis stroke="#64748B" fontSize={11} />
+                              <Tooltip contentStyle={{ backgroundColor: '#0D1528', borderColor: 'rgba(255,255,255,0.1)', color: '#fff', fontSize: '12px' }} />
+                              <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
+                              <Area name="HVAC Target Setpoint (°C)" type="monotone" dataKey="setpoint" stroke="#A78BFA" strokeWidth={2} fillOpacity={1} fill="url(#colorSetpoint)" />
+                              <Area name="Estimated Power Load (kWh)" type="monotone" dataKey="load" stroke="#00D4AA" strokeWidth={2} fillOpacity={1} fill="url(#colorLoad)" />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-12 text-center rounded-2xl glass-card">
+                        <span className="text-3xl block mb-2">📊</span>
+                        <p className="text-sm font-medium text-slate-400">No active optimization schedule computed yet.</p>
+                        <p className="text-xs text-slate-500 mt-1">Click "Run Optimization Run" in the top right to analyze and set schedule target settings.</p>
+                      </div>
+                    )}
+
+                    {/* Schedule run notes and metadata */}
+                    {schedule && schedule.notes && (
+                      <div className="p-5 rounded-xl bg-navy-900 border border-slate-800 text-xs text-slate-400">
+                        <span className="font-semibold text-slate-300 block mb-1">Optimizer Engine Notes:</span>
+                        {schedule.notes}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Sensors Tab Content */}
+                {activeTab === 'sensors' && (
+                  <div className="rounded-2xl glass-card overflow-hidden">
+                    <div className="p-6 border-b border-slate-800">
+                      <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Installed Room Sensors</h3>
+                      <p className="text-xs text-slate-400 mt-1">Live physical status checkpoints tracked by the optimizer</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      {sensors.length > 0 ? (
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="bg-navy-900 text-slate-400 text-xs font-semibold border-b border-slate-800">
+                              <th className="py-4 px-6">ID</th>
+                              <th className="py-4 px-6">Sensor Name</th>
+                              <th className="py-4 px-6">Zone</th>
+                              <th className="py-4 px-6">Sensor Type</th>
+                              <th className="py-4 px-6">Standard Unit</th>
+                              <th className="py-4 px-6 text-right">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800 text-xs text-slate-300">
+                            {sensors.map(sensor => (
+                              <tr key={sensor.id} className="hover:bg-navy-800/40 transition-colors">
+                                <td className="py-4 px-6 font-mono text-[11px] text-slate-500">#{sensor.id}</td>
+                                <td className="py-4 px-6 font-semibold text-white">{sensor.name}</td>
+                                <td className="py-4 px-6">{sensor.zone}</td>
+                                <td className="py-4 px-6 capitalize">{sensor.kind}</td>
+                                <td className="py-4 px-6 font-mono">{sensor.units}</td>
+                                <td className="py-4 px-6 text-right">
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold bg-teal-500/10 text-teal-400 border border-teal-500/20">
+                                    ● Active
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="p-12 text-center">
+                          <span className="text-2xl block mb-2">📡</span>
+                          <p className="text-sm font-medium text-slate-400">No home sensors registered in the system database.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Recommendations Tab Content */}
+                {activeTab === 'insights' && (
+                  <div className="space-y-6">
+                    {tips.length > 0 ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {tips.map(tip => (
+                          <div key={tip.id} className="p-6 rounded-2xl glass-card relative overflow-hidden flex flex-col justify-between border-l-4 border-l-teal-500">
+                            <div>
+                              <div className="flex items-center justify-between mb-4">
+                                <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${tip.category === 'schedule' ? 'bg-purple-950 text-purple-400 border border-purple-800/50' : tip.category === 'comfort' ? 'bg-amber-950 text-amber-400 border border-amber-800/50' : 'bg-slate-900 text-slate-400'}`}>
+                                  {tip.category}
+                                </span>
+                                <span className="text-xs font-semibold text-slate-400">
+                                  Confidence: {Math.round(tip.confidence * 100)}%
+                                </span>
+                              </div>
+                              <h3 className="text-sm font-bold text-white mb-2">{tip.title}</h3>
+                              <p className="text-xs text-slate-400 leading-relaxed mb-6">{tip.detail}</p>
+                            </div>
+                            <div className="pt-4 border-t border-slate-800/60 flex items-center justify-between">
+                              <span className="text-xs text-slate-400">Estimated Savings:</span>
+                              <span className="text-sm font-bold text-teal-400">-{tip.estimated_savings_kwh} kWh</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-12 text-center rounded-2xl glass-card">
+                        <span className="text-3xl block mb-2">💡</span>
+                        <p className="text-sm font-medium text-slate-400">No suggestions compiled by the optimization engine yet.</p>
+                        <p className="text-xs text-slate-500 mt-1">Insights compile automatically after a schedule runs.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Weather Forecast Tab Content */}
+                {activeTab === 'weather' && (
+                  <div className="space-y-8">
+                    {weather.length > 0 ? (
+                      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+                        {weather.map((w, idx) => (
+                          <div key={idx} className="p-4 rounded-xl bg-navy-900/60 border border-slate-800/60 text-center space-y-3">
+                            <div className="text-[10px] font-semibold text-slate-400">{formatTime(w.timestamp)}</div>
+                            <div className="text-2xl">
+                              {w.solar_irradiance_wm2 > 200 ? '☀️' : '🌙'}
+                            </div>
+                            <div className="text-base font-bold text-white">{w.temperature_c}°C</div>
+                            <div className="text-[10px] text-slate-500 font-medium">
+                              Hum: {w.humidity}% | Sol: {Math.round(w.solar_irradiance_wm2)}W/m²
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-12 text-center rounded-2xl glass-card">
+                        <span className="text-3xl block mb-2">🌤️</span>
+                        <p className="text-sm font-medium text-slate-400">No local weather forecast data downloaded yet.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              </div>
+            )}
+          </main>
+
+        </div>
+      );
+    }
+
+    // Mount application to DOM root element
+    const container = document.getElementById('root');
+    const root = ReactDOM.createRoot(container);
+    root.render(<App />);
+  </script>
+</body>
+</html>

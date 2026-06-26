@@ -1,6 +1,6 @@
 # Smart Home Energy Optimizer
 
-A demo FastAPI backend that ingests IoT-style sensor readings, fetches weather forecasts, and suggests energy-efficient HVAC schedules plus savings tips. See `docs/ARCHITECTURE.md` for the full component map.
+An AI-powered smart home energy optimization system featuring a FastAPI backend with real-time IoT sensor ingestion, HVAC schedule optimization, weather forecasting integration, and a visually stunning React dashboard.
 
 ## Features
 - Register sensors (temperature, occupancy, power, etc.) and stream readings.

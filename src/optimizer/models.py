@@ -4,18 +4,29 @@ from typing import Optional, List
 from sqlmodel import Field, Relationship, SQLModel
 
 
+class User(SQLModel, table=True):
+    """Registered user for JWT authentication."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(unique=True, index=True)
+    hashed_password: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Sensor(SQLModel, table=True):
+    """Physical or virtual sensor installed in a zone."""
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     zone: str
     kind: str = Field(description="temperature|humidity|occupancy|power")
     units: str
+    is_deleted: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     readings: List["SensorReading"] = Relationship(back_populates="sensor")
 
 
 class SensorReading(SQLModel, table=True):
+    """A single reading from a sensor at a point in time."""
     id: Optional[int] = Field(default=None, primary_key=True)
     sensor_id: int = Field(foreign_key="sensor.id")
     value: float
@@ -25,6 +36,7 @@ class SensorReading(SQLModel, table=True):
 
 
 class WeatherForecast(SQLModel, table=True):
+    """Hourly weather forecast snapshot from Open-Meteo."""
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: datetime = Field(index=True)
     temperature_c: float
@@ -35,6 +47,7 @@ class WeatherForecast(SQLModel, table=True):
 
 
 class ScheduleRun(SQLModel, table=True):
+    """A completed optimization run with energy and carbon metrics."""
     id: Optional[int] = Field(default=None, primary_key=True)
     generated_at: datetime = Field(default_factory=datetime.utcnow)
     baseline_kwh: float
@@ -42,11 +55,15 @@ class ScheduleRun(SQLModel, table=True):
     comfort_score: float
     cost_score: float
     notes: Optional[str] = None
+    # Carbon footprint tracking (US average: 0.386 kg CO2 per kWh)
+    carbon_kg: Optional[float] = None
+    carbon_saved_kg: Optional[float] = None
 
     blocks: List["ScheduleBlock"] = Relationship(back_populates="run")
 
 
 class ScheduleBlock(SQLModel, table=True):
+    """A single 1-hour HVAC instruction block within a ScheduleRun."""
     id: Optional[int] = Field(default=None, primary_key=True)
     run_id: int = Field(foreign_key="schedulerun.id", index=True)
     timestamp: datetime = Field(index=True)
@@ -59,6 +76,7 @@ class ScheduleBlock(SQLModel, table=True):
 
 
 class Recommendation(SQLModel, table=True):
+    """AI-generated energy saving recommendation."""
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
     detail: str
@@ -66,3 +84,13 @@ class Recommendation(SQLModel, table=True):
     confidence: float = 0.5
     created_at: datetime = Field(default_factory=datetime.utcnow)
     category: str = Field(default="general")
+
+
+class AlertConfig(SQLModel, table=True):
+    """Threshold-based alert configuration for a sensor."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    sensor_id: int = Field(foreign_key="sensor.id", index=True)
+    threshold_value: float
+    operator: str = Field(default=">")  # '>', '<', '>=', '<='
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
