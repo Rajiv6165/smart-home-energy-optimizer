@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+/Lib/
+/Include/
+/Scripts/
+/pyvenv.cfg
+
+# SQLite databases
+*.db
+*.sqlite
+*.db-journal
+
+# pytest/coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor/IDE configs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
