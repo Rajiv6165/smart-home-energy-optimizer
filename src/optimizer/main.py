@@ -92,10 +92,32 @@ async def _periodic_alerts() -> None:
         await asyncio.sleep(60)
 
 
+async def _periodic_ping() -> None:
+    from .api.websocket_manager import manager
+    from datetime import datetime
+    await asyncio.sleep(5)
+    while True:
+        try:
+            payload = {
+                "type": "ping",
+                "data": {},
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            await manager.broadcast(payload, "all")
+            logger.debug("WebSocket ping broadcasted")
+        except Exception as exc:
+            logger.warning("WebSocket ping failed: %s", exc)
+        await asyncio.sleep(30)
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     logging.basicConfig(level=logging.INFO)
     init_db()
+
+    # Capture main running loop for thread-safe broadcasts
+    from .api.websocket_manager import manager
+    manager.loop = asyncio.get_running_loop()
 
     try:
         active_sensors = sensors.list_sensors()
@@ -112,6 +134,7 @@ async def startup_event() -> None:
         asyncio.create_task(_periodic_weather()),
         asyncio.create_task(_periodic_schedule()),
         asyncio.create_task(_periodic_alerts()),
+        asyncio.create_task(_periodic_ping()),
     ]
 
 

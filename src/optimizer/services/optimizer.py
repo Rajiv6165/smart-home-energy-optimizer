@@ -290,34 +290,33 @@ def generate_schedule() -> ScheduleRun:
 
         # ── Broadcast via WebSocket
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                from ..api.websocket_manager import manager
-                schedule_payload = {
-                    "type": "schedule",
-                    "data": {
-                        "run_id": run.id,
-                        "generated_at": run.generated_at.isoformat(),
-                        "baseline_kwh": run.baseline_kwh,
-                        "optimized_kwh": run.optimized_kwh,
-                        "comfort_score": run.comfort_score,
-                        "cost_score": run.cost_score,
-                        "carbon_kg": run.carbon_kg,
-                        "carbon_saved_kg": run.carbon_saved_kg,
-                        "notes": run.notes,
-                        "blocks": [
-                            {
-                                "timestamp": block.timestamp.isoformat(),
-                                "target_temp_c": block.target_temp_c,
-                                "target_hvac_mode": block.target_hvac_mode,
-                                "estimated_kwh": block.estimated_kwh,
-                                "comfort_delta": block.comfort_delta,
-                            }
-                            for block in sorted(run.blocks, key=lambda b: b.timestamp)
-                        ],
-                    },
-                }
-                loop.create_task(manager.broadcast(schedule_payload, "schedules"))
+            from ..api.websocket_manager import manager
+            schedule_payload = {
+                "type": "schedule_updated",
+                "data": {
+                    "run_id": run.id,
+                    "generated_at": run.generated_at.isoformat(),
+                    "baseline_kwh": run.baseline_kwh,
+                    "optimized_kwh": run.optimized_kwh,
+                    "comfort_score": run.comfort_score,
+                    "cost_score": run.cost_score,
+                    "carbon_kg": run.carbon_kg,
+                    "carbon_saved_kg": run.carbon_saved_kg,
+                    "notes": run.notes,
+                    "blocks": [
+                        {
+                            "timestamp": block.timestamp.isoformat(),
+                            "target_temp_c": block.target_temp_c,
+                            "target_hvac_mode": block.target_hvac_mode,
+                            "estimated_kwh": block.estimated_kwh,
+                            "comfort_delta": block.comfort_delta,
+                        }
+                        for block in sorted(run.blocks, key=lambda b: b.timestamp)
+                    ],
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            manager.broadcast_sync(schedule_payload, "schedules")
         except Exception:
             pass
 

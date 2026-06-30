@@ -5,7 +5,7 @@ import statistics
 from sqlmodel import select
 
 from ..database import session_scope
-from ..models import Sensor, SensorReading, AlertConfig
+from ..models import Sensor, SensorReading, AlertConfig, Alert
 
 
 def create_sensor(name: str, zone: str, kind: str, units: str) -> Sensor:
@@ -84,7 +84,7 @@ def add_reading(sensor_id: int, value: float, recorded_at: datetime | None = Non
 
         # 1. Broadcaster for live readings
         reading_payload = {
-            "type": "reading",
+            "type": "sensor_reading",
             "data": {
                 "id": reading.id,
                 "sensor_id": sensor.id,
@@ -94,7 +94,8 @@ def add_reading(sensor_id: int, value: float, recorded_at: datetime | None = Non
                 "value": reading.value,
                 "recorded_at": reading.recorded_at.isoformat(),
                 "is_anomaly": is_anomaly,
-            }
+            },
+            "timestamp": reading.recorded_at.isoformat()
         }
         
         # 2. Check alert configs
@@ -105,43 +106,56 @@ def add_reading(sensor_id: int, value: float, recorded_at: datetime | None = Non
         alerts = session.exec(statement).all()
         triggered_alerts = []
 
-        for alert in alerts:
+        for alert_cfg in alerts:
             triggered = False
-            op = alert.operator
-            if op == ">" and value > alert.threshold_value:
+            op = alert_cfg.operator
+            if op == ">" and value > alert_cfg.threshold_value:
                 triggered = True
-            elif op == "<" and value < alert.threshold_value:
+            elif op == "<" and value < alert_cfg.threshold_value:
                 triggered = True
-            elif op == ">=" and value >= alert.threshold_value:
+            elif op == ">=" and value >= alert_cfg.threshold_value:
                 triggered = True
-            elif op == "<=" and value <= alert.threshold_value:
+            elif op == "<=" and value <= alert_cfg.threshold_value:
                 triggered = True
 
             if triggered:
+                # Save threshold breach as an Alert in DB
+                db_alert = Alert(
+                    title=f"Threshold Alert: {sensor.name}",
+                    message=f"Sensor '{sensor.name}' in {sensor.zone} breached threshold: {value} {op} {alert_cfg.threshold_value}",
+                    severity="warning",
+                    sensor_id=sensor.id,
+                    zone=sensor.zone,
+                    triggered_at=reading.recorded_at,
+                    is_read=False,
+                    category=sensor.kind
+                )
+                session.add(db_alert)
+                session.flush() # Populate the ID
+                
                 alert_payload = {
-                    "type": "alert",
+                    "type": "new_alert",
                     "data": {
-                        "id": alert.id,
-                        "sensor_id": sensor.id,
-                        "sensor_name": sensor.name,
-                        "value": value,
-                        "threshold_value": alert.threshold_value,
-                        "operator": alert.operator,
-                        "timestamp": reading.recorded_at.isoformat(),
-                    }
+                        "id": db_alert.id,
+                        "title": db_alert.title,
+                        "message": db_alert.message,
+                        "severity": db_alert.severity,
+                        "sensor_id": db_alert.sensor_id,
+                        "zone": db_alert.zone,
+                        "triggered_at": db_alert.triggered_at.isoformat(),
+                        "is_read": db_alert.is_read,
+                        "category": db_alert.category,
+                    },
+                    "timestamp": reading.recorded_at.isoformat()
                 }
                 triggered_alerts.append(alert_payload)
 
-        # Broadcast events asynchronously using event loop tasks
+        # Broadcast events synchronously/thread-safely
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                from ..api.websocket_manager import manager
-                # Send reading to 'readings' room
-                loop.create_task(manager.broadcast(reading_payload, "readings"))
-                # Send all triggered alerts to 'alerts' room
-                for alert_msg in triggered_alerts:
-                    loop.create_task(manager.broadcast(alert_msg, "alerts"))
+            from ..api.websocket_manager import manager
+            manager.broadcast_sync(reading_payload, "readings")
+            for alert_msg in triggered_alerts:
+                manager.broadcast_sync(alert_msg, "alerts")
         except Exception:
             pass
 
