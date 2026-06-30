@@ -9,6 +9,14 @@ class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     email: str = Field(unique=True, index=True)
     hashed_password: str
+    full_name: Optional[str] = Field(default=None)
+    avatar_color: str = Field(default="#00D4AA")
+    home_name: str = Field(default="My Smart Home")
+    comfort_min_c: float = Field(default=18.0)
+    comfort_max_c: float = Field(default=24.0)
+    tariff_per_kwh: float = Field(default=0.15)
+    timezone: str = Field(default="UTC")
+    notifications_enabled: bool = Field(default=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -94,3 +102,17 @@ class AlertConfig(SQLModel, table=True):
     operator: str = Field(default=">")  # '>', '<', '>=', '<='
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Alert(SQLModel, table=True):
+    """System generated notification / alert."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str
+    message: str
+    severity: str = Field(description="info|warning|critical")
+    sensor_id: Optional[int] = Field(default=None, foreign_key="sensor.id", nullable=True)
+    zone: Optional[str] = Field(default=None, nullable=True)
+    triggered_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    is_read: bool = Field(default=False, index=True)
+    category: str = Field(description="temperature|power|occupancy|system")
+

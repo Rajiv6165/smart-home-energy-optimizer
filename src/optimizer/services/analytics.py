@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from sqlmodel import select
 
 from ..database import session_scope
-from ..models import Sensor, SensorReading
+from ..models import Sensor, SensorReading, ScheduleRun
 
 
 def get_daily_summary() -> List[Dict[str, Any]]:
@@ -220,4 +220,140 @@ def get_temperature_history(hours: int = 6) -> List[Dict[str, Any]]:
             output.append(row)
 
         return output
+
+
+def get_weekly_summary() -> List[Dict[str, Any]]:
+    """Aggregate metrics per day for the last 7 days: baseline vs optimized energy and scores."""
+    with session_scope() as session:
+        since = datetime.utcnow() - timedelta(days=7)
+        # Select all runs in the last 7 days
+        stmt = select(ScheduleRun).where(ScheduleRun.generated_at >= since).order_by(ScheduleRun.generated_at.desc())
+        runs = session.exec(stmt).all()
+        
+        runs_by_day = {}
+        for run in runs:
+            day_str = run.generated_at.strftime("%Y-%m-%d")
+            if day_str not in runs_by_day:
+                runs_by_day[day_str] = run
+                
+        summary = []
+        for day_str in sorted(runs_by_day.keys(), reverse=True):
+            run = runs_by_day[day_str]
+            savings = max(0.0, round(run.baseline_kwh - run.optimized_kwh, 2))
+            summary.append({
+                "date": day_str,
+                "baseline_kwh": run.baseline_kwh,
+                "optimized_kwh": run.optimized_kwh,
+                "savings_kwh": savings,
+                "carbon_kg": run.carbon_kg or 0.0,
+                "comfort_score": run.comfort_score,
+                "cost_score": run.cost_score,
+            })
+        return summary
+
+
+def get_savings_total(tariff: float) -> Dict[str, Any]:
+    """Compute all-time total kwh, co2, and cost savings across optimization runs."""
+    with session_scope() as session:
+        stmt = select(ScheduleRun).order_by(ScheduleRun.generated_at.desc())
+        runs = session.exec(stmt).all()
+        
+        total_runs = len(runs)
+        if total_runs == 0:
+            return {
+                "total_kwh_saved": 0.0,
+                "total_carbon_saved_kg": 0.0,
+                "total_cost_saved": 0.0,
+                "total_runs": 0,
+                "best_day": None,
+                "worst_day": None
+            }
+            
+        runs_by_day = defaultdict(list)
+        for run in runs:
+            day_str = run.generated_at.strftime("%Y-%m-%d")
+            runs_by_day[day_str].append(run)
+            
+        daily_savings = {}
+        total_kwh_saved = 0.0
+        total_carbon_saved_kg = 0.0
+        for day_str, day_runs in runs_by_day.items():
+            latest_run = sorted(day_runs, key=lambda r: r.generated_at)[-1]
+            savings = max(0.0, latest_run.baseline_kwh - latest_run.optimized_kwh)
+            daily_savings[day_str] = savings
+            total_kwh_saved += savings
+            total_carbon_saved_kg += latest_run.carbon_saved_kg or 0.0
+            
+        best_day = max(daily_savings, key=daily_savings.get) if daily_savings else None
+        worst_day = min(daily_savings, key=daily_savings.get) if daily_savings else None
+        
+        return {
+            "total_kwh_saved": round(total_kwh_saved, 2),
+            "total_carbon_saved_kg": round(total_carbon_saved_kg, 2),
+            "total_cost_saved": round(total_kwh_saved * tariff, 2),
+            "total_runs": total_runs,
+            "best_day": best_day,
+            "worst_day": worst_day
+        }
+
+
+def get_zone_comparison() -> List[Dict[str, Any]]:
+    """Compare comfort, occupancy, power, and compute efficiency score per zone in the last 24h."""
+    with session_scope() as session:
+        stmt = select(Sensor).where(Sensor.is_deleted == False)
+        sensors = session.exec(stmt).all()
+        
+        sensors_by_zone = defaultdict(list)
+        for s in sensors:
+            sensors_by_zone[s.zone].append(s)
+            
+        since = datetime.utcnow() - timedelta(hours=24)
+        comparison = []
+        
+        for zone, zone_sensors in sensors_by_zone.items():
+            if zone == "panel":
+                continue
+                
+            sensor_ids = [s.id for s in zone_sensors]
+            readings_stmt = select(SensorReading).where(SensorReading.sensor_id.in_(sensor_ids), SensorReading.recorded_at >= since)
+            readings = session.exec(readings_stmt).all()
+            
+            kind_values = defaultdict(list)
+            for r in readings:
+                sensor = next(s for s in zone_sensors if s.id == r.sensor_id)
+                kind_values[sensor.kind].append(r.value)
+                
+            avg_temp = round(statistics.mean(kind_values["temperature"]), 2) if kind_values["temperature"] else 21.0
+            avg_occ = round(statistics.mean(kind_values["occupancy"]), 2) if kind_values["occupancy"] else 0.0
+            
+            power_readings = kind_values["power"]
+            avg_kw = statistics.mean(power_readings) if power_readings else 0.0
+            total_kwh = round(avg_kw * 24.0, 2)
+            
+            # Wasted energy when zone is unoccupied but draw is high
+            waste = 0.0
+            if avg_occ < 0.1 and total_kwh > 0.5:
+                waste = min(50.0, total_kwh * 15.0)
+            efficiency_score = round(max(30.0, min(99.0, 95.0 - waste)), 1)
+            
+            comparison.append({
+                "zone": zone,
+                "avg_temp": avg_temp,
+                "avg_occupancy": avg_occ,
+                "total_kwh": total_kwh,
+                "sensor_count": len(zone_sensors),
+                "efficiency_score": efficiency_score
+            })
+            
+        return comparison
+
+
+def get_sensor_history(sensor_id: int, hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch raw values and timestamps for sparklines."""
+    with session_scope() as session:
+        since = datetime.utcnow() - timedelta(hours=hours)
+        stmt = select(SensorReading).where(SensorReading.sensor_id == sensor_id, SensorReading.recorded_at >= since).order_by(SensorReading.recorded_at.asc())
+        readings = session.exec(stmt).all()
+        return [{"recorded_at": r.recorded_at, "value": r.value} for r in readings]
+
 

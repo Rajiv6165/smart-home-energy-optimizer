@@ -80,6 +80,18 @@ async def _periodic_schedule() -> None:
         await asyncio.sleep(settings.schedule_refresh_minutes * 60)
 
 
+async def _periodic_alerts() -> None:
+    await asyncio.sleep(10)
+    while True:
+        try:
+            from .services.alerts import check_and_trigger_alerts
+            check_and_trigger_alerts()
+            logger.info("Alert checks executed in background")
+        except Exception as exc:
+            logger.warning("Alert checks job failed: %s", exc)
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     logging.basicConfig(level=logging.INFO)
@@ -99,6 +111,7 @@ async def startup_event() -> None:
     app.state._tasks = [
         asyncio.create_task(_periodic_weather()),
         asyncio.create_task(_periodic_schedule()),
+        asyncio.create_task(_periodic_alerts()),
     ]
 
 
