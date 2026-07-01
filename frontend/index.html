@@ -171,6 +171,13 @@
       const [newPassword, setNewPassword] = useState('');
       const [confirmPassword, setConfirmPassword] = useState('');
 
+      // Settings State
+      const [systemLogs, setSystemLogs] = useState([`[${new Date().toLocaleTimeString()}] System initialized.`]);
+      const [latencyMs, setLatencyMs] = useState(0);
+      const [serverStatus, setServerStatus] = useState('offline');
+      const [simulationInterval, setSimulationInterval] = useState(15);
+      const [overrideScheduler, setOverrideScheduler] = useState(false);
+
       // Data States
       const [activeTab, setActiveTab] = useState('dashboard');
       const [schedule, setSchedule] = useState(null);
@@ -482,6 +489,10 @@
             setProfileNotifications(p.notifications_enabled);
           }
 
+          // Fetch latency
+          pingAPI();
+
+          logSystemEvent("Refreshed all metrics successfully.");
           setSecondsSinceUpdate(0);
         } catch (err) {
           setError(err.message || 'Failed to load data');
@@ -491,15 +502,69 @@
         }
       }
 
-      // Setup 60-second auto-refresh and elapsed counter
+      // Log diagnostics event helper
+      function logSystemEvent(msg) {
+        setSystemLogs(prev => {
+          const timestamp = new Date().toLocaleTimeString();
+          const next = prev.concat([`[${timestamp}] ${msg}`]);
+          if (next.length > 50) return next.slice(next.length - 50);
+          return next;
+        });
+      }
+
+      // Ping server latency helper
+      async function pingAPI() {
+        if (!token) return;
+        const start = performance.now();
+        try {
+          await request('/weather/current');
+          const elapsed = Math.round(performance.now() - start);
+          setLatencyMs(elapsed);
+          setServerStatus('online');
+        } catch (e) {
+          setServerStatus('offline');
+          setLatencyMs(0);
+        }
+      }
+
+      // Download Full Diagnostic Backup report JSON (Authenticated)
+      async function handleBackupSystemJSON() {
+        logSystemEvent("Backup JSON generation requested.");
+        try {
+          const res = await fetch(API_BASE + '/export/report-json', {
+            headers: {
+              'Authorization': 'Bearer ' + token
+            }
+          });
+          if (!res.ok) throw new Error('Download failed');
+          const blob = await res.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+          a.download = `smart_home_report_${dateStr}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          showToast('Diagnostic JSON backup downloaded', 'success');
+          logSystemEvent("Diagnostic JSON backup successfully exported.");
+        } catch (err) {
+          showToast('Failed to export backup JSON', 'error');
+          logSystemEvent("Error: Backup export failed.");
+        }
+      }
+
+      // Setup simulation refresh and elapsed counter
       useEffect(() => {
         if (!token) return;
         
         fetchAllData();
+        pingAPI();
 
         const timer = setInterval(() => {
           setSecondsSinceUpdate(function(prev) {
-            if (prev >= 59) {
+            if (prev >= (simulationInterval - 1)) {
+              logSystemEvent(`Polling trigger: Elapsed ${simulationInterval}s.`);
               fetchAllData();
               return 0;
             }
@@ -508,7 +573,7 @@
         }, 1000);
 
         return () => clearInterval(timer);
-      }, [token]);
+      }, [token, simulationInterval]);
 
       // WebSocket Live Feed connection manager
       useEffect(() => {
@@ -529,6 +594,7 @@
           ws.onopen = () => {
             console.log('WebSocket connection established.');
             setWsConnected(true);
+            logSystemEvent("WebSocket connection established successfully.");
             reconnectDelay = 1000;
           };
 
@@ -538,9 +604,13 @@
               console.log('WS Message received:', msg);
               if (msg.type === 'new_alert') {
                 showToast('🚨 ' + msg.data.title + ': ' + msg.data.message, 'warning');
-                fetchAlerts();
+                logSystemEvent(`WS ALERT: [${msg.data.severity.toUpperCase()}] ${msg.data.title}`);
+                request('/alerts').then(alertsRes => {
+                  if (alertsRes && alertsRes.data) setAlerts(alertsRes.data);
+                }).catch(() => {});
               } else if (msg.type === 'sensor_reading') {
                 const reading = msg.data;
+                logSystemEvent(`WS SENSOR: #${reading.sensor_id} in ${reading.sensor.zone} changed to ${reading.value} ${reading.sensor.units}`);
                 setLatestReadings(prev => {
                   const copy = Object.assign({}, prev);
                   copy[reading.sensor_id] = reading;
@@ -556,6 +626,7 @@
                 }
               } else if (msg.type === 'schedule_updated') {
                 showToast('📅 New schedule generated by optimizer!', 'success');
+                logSystemEvent("WS SCHEDULE: Optimization run updated schedules.");
                 request('/schedules/latest').then(res => {
                   if (res && res.data) setSchedule(res.data);
                 });
@@ -568,6 +639,7 @@
           ws.onclose = () => {
             console.log('WebSocket connection closed.');
             setWsConnected(false);
+            logSystemEvent("WebSocket disconnected. Connection closed.");
             reconnectTimeout = setTimeout(() => {
               console.log(`Reconnecting to WebSocket (attempting in ${reconnectDelay}ms)...`);
               reconnectDelay = Math.min(reconnectDelay * 2, 30000);
@@ -784,6 +856,7 @@
       async function handleSaveProfile(e) {
         if (e) e.preventDefault();
         setProfileSaving(true);
+        logSystemEvent("Submitting profile preference changes.");
         try {
           const res = await request('/auth/profile', {
             method: 'PUT',
@@ -799,6 +872,7 @@
           });
           if (res && res.data) {
             showToast('Profile configuration updated successfully!', 'success');
+            logSystemEvent("Profile update succeeded.");
             
             // Refresh dashboard savingsTotal if tariff updated
             const savingsRes = await request('/analytics/savings-total');
@@ -808,6 +882,7 @@
           }
         } catch (err) {
           showToast(err.message || 'Failed to save profile settings', 'error');
+          logSystemEvent("Error: Profile update failed.");
         } finally {
           setProfileSaving(false);
         }
@@ -825,6 +900,7 @@
           return;
         }
         setPwdSaving(true);
+        logSystemEvent("Sending secure password update request.");
         try {
           const res = await request('/auth/change-password', {
             method: 'POST',
@@ -835,12 +911,14 @@
           });
           if (res && res.data && res.data.success) {
             showToast('Password changed successfully!', 'success');
+            logSystemEvent("Password changed successfully.");
             setOldPassword('');
             setNewPassword('');
             setConfirmPassword('');
           }
         } catch (err) {
           showToast(err.message || 'Failed to change password', 'error');
+          logSystemEvent("Error: Password change rejected by backend.");
         } finally {
           setPwdSaving(false);
         }
@@ -1426,6 +1504,7 @@
                   { id: 'analytics', label: 'Analytics', icon: '📈' },
                   { id: 'history', label: 'Schedule History', icon: '🕒' },
                   { id: 'profile', label: 'User Profile', icon: '👤' },
+                  { id: 'settings', label: 'Settings', icon: '⚙️' },
                   { id: 'sensors', label: 'Live Sensors', icon: '📡' },
                   { id: 'alerts', label: 'Alerts', icon: '🔔', badge: alerts.filter(a => !a.is_read).length },
                   { id: 'insights', label: 'AI Recommendations', icon: '💡' },
@@ -2961,6 +3040,187 @@
                         </button>
                       </div>
                     </form>
+                  </div>
+                )}
+
+                {/* Settings Tab Content */}
+                {activeTab === 'settings' && (
+                  <div className="space-y-8 max-w-4xl mx-auto">
+                    {/* Header */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-sm font-bold text-white uppercase tracking-wider">System Administration & Diagnostics</h2>
+                        <p className="text-xs text-slate-400 mt-1">Monitor server health latency, trigger administrative overrides, configure simulator ticks, and view logs</p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          logSystemEvent("Manual health ping initiated.");
+                          await pingAPI();
+                        }}
+                        className="bg-navy-900 border border-slate-800 hover:border-slate-700 hover:bg-navy-850 text-slate-300 hover:text-white text-xs font-bold px-4 py-2 rounded-xl transition-all"
+                      >
+                        🔄 Ping Status
+                      </button>
+                    </div>
+
+                    {/* Status Badges Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <div className="p-5 rounded-2xl glass-card flex items-center justify-between border-l-4 border-l-teal-500">
+                        <div>
+                          <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-wider block">WebSocket Gateway</span>
+                          <span className="text-sm font-black text-white mt-1 block">Live Broadcast Feed</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`w-2.5 h-2.5 rounded-full inline-block ${wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`} style={{ animationDuration: '2s' }} />
+                          <span className={`text-xs font-bold uppercase tracking-wider ${wsConnected ? 'text-emerald-400' : 'text-red-500'}`}>
+                            {wsConnected ? 'Connected' : 'Offline'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="p-5 rounded-2xl glass-card flex items-center justify-between border-l-4 border-l-blue-500">
+                        <div>
+                          <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-wider block">FastAPI Server</span>
+                          <span className="text-sm font-black text-white mt-1 block">API Response Latency</span>
+                        </div>
+                        <div className="text-right">
+                          <span className={`text-xs font-mono font-bold uppercase tracking-wider ${serverStatus === 'online' ? 'text-blue-400' : 'text-red-400'}`}>
+                            {serverStatus === 'online' ? `${latencyMs} ms` : 'Offline'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="p-5 rounded-2xl glass-card flex items-center justify-between border-l-4 border-l-purple-500">
+                        <div>
+                          <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-wider block">Open-Meteo API</span>
+                          <span className="text-sm font-black text-white mt-1 block">External Weather Forecast</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs font-bold text-purple-400 uppercase tracking-wider">
+                            {weather.length > 0 ? 'Healthy' : 'Syncing'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quick Actions & Simulations panel */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {/* Left: Administrative Actions */}
+                      <div className="p-6 rounded-2xl glass-card border border-slate-800/80 space-y-6">
+                        <h3 className="text-xs font-extrabold text-teal-400 uppercase tracking-widest border-b border-slate-800/60 pb-2">
+                          System Utilities & Backups
+                        </h3>
+
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <h4 className="text-xs font-bold text-white uppercase tracking-wide">Backup Diagnostic Data</h4>
+                              <p className="text-[10px] text-slate-500">Download complete configuration, savings metrics, and schedule runs as JSON</p>
+                            </div>
+                            <button
+                              onClick={handleBackupSystemJSON}
+                              className="px-4 py-2 rounded-xl text-xs font-bold bg-navy-950 hover:bg-navy-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1.5"
+                            >
+                              📥 Backup JSON
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2">
+                            <div>
+                              <h4 className="text-xs font-bold text-white uppercase tracking-wide">Force Sync Weather</h4>
+                              <p className="text-[10px] text-slate-500">Manually trigger backend scheduler sync to refresh forecast from Open-Meteo</p>
+                            </div>
+                            <button
+                              onClick={handleRefreshWeather}
+                              className="px-4 py-2 rounded-xl text-xs font-bold bg-navy-950 hover:bg-navy-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1.5"
+                            >
+                              🌤️ Sync Now
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right: Simulation Overrides */}
+                      <div className="p-6 rounded-2xl glass-card border border-slate-800/80 space-y-6">
+                        <h3 className="text-xs font-extrabold text-teal-400 uppercase tracking-widest border-b border-slate-800/60 pb-2">
+                          Simulator Configuration
+                        </h3>
+
+                        <div className="space-y-6">
+                          {/* Refresh Interval */}
+                          <div className="space-y-2">
+                            <div className="flex justify-between text-[11px] font-bold">
+                              <span className="text-slate-400 uppercase tracking-wider text-[10px]">Autorefresh Tick Rate</span>
+                              <span className="text-teal-400 font-mono">{simulationInterval}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="5"
+                              max="120"
+                              step="5"
+                              value={simulationInterval}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setSimulationInterval(val);
+                                logSystemEvent(`Simulated refresh interval updated to ${val} seconds.`);
+                              }}
+                              className="w-full accent-teal-500 cursor-pointer bg-navy-950 h-1 rounded"
+                            />
+                          </div>
+
+                          {/* Override Switch */}
+                          <div className="flex items-center justify-between pt-1">
+                            <div>
+                              <h4 className="text-xs font-bold text-white uppercase tracking-wide">Manual Scheduler Override</h4>
+                              <p className="text-[10px] text-slate-500">Lock optimizer execution and override targets with manual hvac schedules</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = !overrideScheduler;
+                                setOverrideScheduler(next);
+                                logSystemEvent(`Manual scheduler override toggled to ${next ? 'ACTIVE' : 'INACTIVE'}.`);
+                              }}
+                              className={`w-11 h-6 rounded-full transition-colors relative flex items-center outline-none ${
+                                overrideScheduler ? 'bg-teal-500' : 'bg-slate-800'
+                              }`}
+                            >
+                              <span className={`w-4 h-4 rounded-full bg-navy-950 transition-transform shadow absolute ${
+                                overrideScheduler ? 'translate-x-6' : 'translate-x-1'
+                              }`} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dark System Console Terminal */}
+                    <div className="p-6 rounded-2xl bg-navy-950 border border-slate-900 shadow-2xl space-y-4">
+                      <div className="flex items-center justify-between pb-2 border-b border-slate-900/60">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+                          <span className="text-[10px] font-mono text-slate-400 font-extrabold uppercase tracking-widest ml-2">Diagnostics Console Terminal</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setSystemLogs([`[${new Date().toLocaleTimeString()}] Diagnostics console logs cleared.`]);
+                          }}
+                          className="text-[10px] font-mono text-slate-500 hover:text-slate-300 hover:underline"
+                        >
+                          Clear Terminal
+                        </button>
+                      </div>
+
+                      <div className="h-64 overflow-y-auto font-mono text-xs text-emerald-400/90 leading-relaxed bg-black/40 p-4 rounded-xl space-y-1.5 shadow-inner">
+                        {systemLogs.map((log, idx) => (
+                          <div key={idx} className="whitespace-pre-wrap select-text">
+                            {log}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 )}
 
